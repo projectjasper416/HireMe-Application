@@ -1,0 +1,50 @@
+---
+alwaysApply: true
+---
+# Cursor Project Rules for UI & Code Generation
+
+## 🎨 Design & UX Guidelines
+- All UIs should look clean, modern, and professional — inspired by Apple, Linear, and Vercel.
+- Prioritize smooth user experience with clear information hierarchy and intuitive interactions.
+- Use **Tailwind CSS** for styling.
+- Use **Framer Motion** for animations and transitions.
+- Use grid or flex layouts for consistent alignment.
+- Use large rounded corners (`rounded-2xl` or `rounded-lg`), soft shadows, and subtle transitions.
+- Typography:
+  - Headings: bold, large (e.g., `text-4xl font-bold`)
+  - Subheadings: medium weight (`text-xl font-medium`)
+  - Body text: `text-base text-gray-600`
+- Keep color palettes neutral by default, with soft accent tones.
+
+## 🧰 Frontend Stack Rules
+- Use **React + Tailwind CSS + Framer Motion** (or Next.js if already in use).
+- Components must be **modular**, reusable, and well-commented.
+- Keep code readable, avoid nesting too deeply.
+- Prefer functional components with clear props.
+- Ensure full **responsiveness** across devices (mobile, tablet, desktop).
+
+## 🛠 Code Quality & Style
+- Use clear Tailwind class names instead of inline styles.
+- Avoid magic numbers; use spacing tokens like `p-4`, `m-6`, etc.
+- Use descriptive variable and component names (e.g., `HeroSection`, `FeatureCard`).
+- Comment complex parts of code.
+- Keep logic and presentation separated.
+
+## ⚙️ Behavior
+- Add gentle hover states, transitions (`transition-all duration-300`).
+- Use `framer-motion` animations for mounting, scrolling, and interactions.
+- Ensure keyboard and accessibility support (`aria-label`, focus states).
+
+## 🧩 Customizability
+- Write code that can be easily modified manually later.
+- No hard-coded values unless intentional.
+- Keep layout and style clear so changes can be done quickly in the future.
+
+## 💬 Example Prompt Integration
+When the user requests UI components (e.g., “Build me a landing page for Jasper Labs”), automatically:
+1. Use React functional components.
+2. Use Tailwind for layout and design.
+3. Use Framer Motion for interactivity.
+4. Follow all above design and UX principles.
+5. Output complete, ready-to-run code.
+
