@@ -16,6 +16,10 @@ const parsingInstructions = `You are an expert ATS resume parser.
 - Keep other sections such as Summary, Experience, Education, Skills, Projects, Certifications, etc.
 - Do not merge multiple resume parts into a single section; preserve ordering from the resume.
 - For structured data (addresses, job bullets, etc.), use arrays or nested objects where appropriate.`;
+const formattingReminder = `
+- When returning section content, omit leading labels such as "Company:", "Title:", "Dates:".
+- Instead, express details in sentences or list items (e.g., "Cogoport — Data Engineering Associate").
+- Respect the original punctuation and hyphenation (do NOT insert or remove hyphens unless the resume already uses them).`;
 
 const contactExtractionInstructions = `You are an expert resume parser.
 Extract ONLY the contact information for the candidate and return it as:
@@ -213,7 +217,8 @@ export async function parseResumeWithLLM({ fileBase64 }: ParseArgs): Promise<Res
               text: parsingInstructions,
             },
             {
-              text: 'Parse the attached resume into structured sections. Return JSON with `sections`, each having `heading` and `body`.',
+              text: `Parse the attached resume into structured sections. Return JSON with "sections", each having "heading" and "body".${formattingReminder}`,
+              
             },
             {
               inline_data: {

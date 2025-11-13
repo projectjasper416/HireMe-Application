@@ -50,6 +50,33 @@ function sanitizeSections(sections: any[]) {
   });
 }
 
+function cleanupSectionBody(heading: string, body: string): string {
+  if (!body) return body;
+  const lowerHeading = heading.toLowerCase();
+  if (lowerHeading.includes('contact')) {
+    return body;
+  }
+
+  const labelRegex = /^([\u2022•\-\*]?\s*)([A-Za-z][A-Za-z0-9 &'()/\-]{2,40}):\s*/;
+
+  const cleaned = body
+    .split('\n')
+    .map((line) => {
+      let updated = line;
+      let iterations = 0;
+      while (labelRegex.test(updated) && iterations < 3) {
+        updated = updated.replace(labelRegex, (_, bullet) => (bullet ?? ''));
+        iterations += 1;
+      }
+      return updated;
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return cleaned.length > 0 ? cleaned : body;
+}
+
 export const resumeRouter = Router();
 
 // PRD 6.1 Resume Workspace: secure APIs behind auth
@@ -104,7 +131,12 @@ resumeRouter.post('/', async (req: AuthenticatedRequest, res) => {
     }
   }
 
-  const normalizedContent = sanitizedSections
+  const normalizedSections = sanitizedSections.map((section) => ({
+    ...section,
+    body: cleanupSectionBody(section.heading, section.body),
+  }));
+
+  const normalizedContent = normalizedSections
     .map((section) => `${section.heading}\n${section.body}`)
     .join('\n\n');
   const resumeId = uuid();
@@ -114,13 +146,13 @@ resumeRouter.post('/', async (req: AuthenticatedRequest, res) => {
     user_id: req.user!.id,
     original_name: fileName,
     original_content: normalizedContent,
-    sections: sanitizedSections,
+    sections: normalizedSections,
     original_pdf_base64: originalPdfBase64,
   });
 
   if (error) return res.status(400).json({ error: error.message });
 
-  return res.status(201).json({ id: resumeId, sections: sanitizedSections });
+  return res.status(201).json({ id: resumeId, sections: normalizedSections });
 });
 
 resumeRouter.get('/:resumeId/sections', async (req: AuthenticatedRequest, res) => {
