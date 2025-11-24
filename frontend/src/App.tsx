@@ -4,14 +4,18 @@ import { motion } from 'framer-motion';
 import { LoginForm } from './components/LoginForm';
 import { SignupForm } from './components/SignupForm';
 import { SocialButtons } from './components/SocialButtons';
+import { AppHeader } from './components/AppHeader';
 import { ResumeWorkspace } from './components/ResumeWorkspace';
 import { AIReviewPage } from './pages/AIReviewPage';
+import { AITailorPage } from './pages/AITailorPage';
+import { JobTrackerPage } from './pages/JobTrackerPage';
 import { supabase } from './lib/supabase';
 
 export function App() {
   const [tab, setTab] = useState<'login' | 'signup'>('login');
   const [session, setSession] = useState<{ token: string; user?: any } | null>(null);
   const [profile, setProfile] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
   const apiBaseUrl = useMemo(() => import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000', []);
   const redirectTo = `${window.location.origin}/auth/callback`;
@@ -19,6 +23,7 @@ export function App() {
   function handleAuthed(nextSession: { token: string; user?: any }) {
     setSession(nextSession);
     setProfile(nextSession.user);
+    setLoading(false);
   }
 
   async function fetchProfile(accessToken: string) {
@@ -36,20 +41,52 @@ export function App() {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      const accessToken = data.session?.access_token;
-      if (accessToken) {
-        handleAuthed({ token: accessToken, user: data.session?.user });
-      }
-    });
+    // Check for existing session on mount
+    const initializeSession = async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+        if (error) {
+          console.error('Error getting session:', error);
+          setLoading(false);
+          return;
+        }
+
+        const accessToken = data.session?.access_token;
+        if (accessToken) {
+          handleAuthed({ token: accessToken, user: data.session?.user });
+          // Fetch full profile
+          await fetchProfile(accessToken);
+        } else {
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error('Session initialization error:', err);
+        setLoading(false);
+      }
+    };
+
+    initializeSession();
+
+    // Listen for auth state changes
+    const { data: listener } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
+      console.log('Auth state changed:', event, currentSession ? 'has session' : 'no session');
+
       const accessToken = currentSession?.access_token;
       if (accessToken) {
         handleAuthed({ token: accessToken, user: currentSession?.user });
+        // Fetch full profile when session is restored or refreshed
+        await fetchProfile(accessToken);
       } else {
-        setSession(null);
-        setProfile(null);
+        // Only clear session on explicit sign out, not on token refresh or initial load
+        if (event === 'SIGNED_OUT') {
+          setSession(null);
+          setProfile(null);
+        }
+        // For INITIAL_SESSION with no session, just stop loading
+        if (event === 'INITIAL_SESSION' || event === 'SIGNED_OUT') {
+          setLoading(false);
+        }
       }
     });
 
@@ -72,29 +109,30 @@ export function App() {
     setProfile(null);
   }
 
+  // Show loading state while checking session
+  if (loading) {
+    return (
+      <div className="min-h-full bg-gradient-to-b from-white to-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-gray-300 border-r-gray-900"></div>
+          <p className="mt-4 text-sm text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (session?.token) {
     return (
       <Router>
         <div className="min-h-full bg-gradient-to-b from-white to-gray-50">
           <div className="mx-auto max-w-6xl px-6 py-10">
-            <div className="mb-8 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm md:flex-row md:items-center md:justify-between">
-              <div>
-                <h1 className="text-4xl font-bold">Welcome back</h1>
-                <p className="text-base text-gray-600">
-                  {profile?.email || 'Authenticated'} · Role: {profile?.role || 'user'}
-                </p>
-              </div>
-              <button
-                onClick={handleLogout}
-                className="self-start rounded-xl border border-gray-200 px-3 py-2 text-sm text-gray-600 transition-all hover:border-black/40"
-              >
-                Logout
-              </button>
-            </div>
+            <AppHeader profile={profile} onLogout={handleLogout} />
 
             <Routes>
               <Route path="/" element={<ResumeWorkspace apiBaseUrl={apiBaseUrl} token={session.token} />} />
               <Route path="/ai-review/:resumeId" element={<AIReviewPage apiBaseUrl={apiBaseUrl} token={session.token} />} />
+              <Route path="/ai-tailor/:resumeId" element={<AITailorPage apiBaseUrl={apiBaseUrl} token={session.token} />} />
+              <Route path="/job-tracker" element={<JobTrackerPage apiBaseUrl={apiBaseUrl} token={session.token} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>

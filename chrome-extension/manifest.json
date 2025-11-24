@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "HireMe Job Tracker Companion",
+  "version": "1.0.0",
+  "description": "Quickly save job postings to the HireMe Job Tracker.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Save to Job Tracker",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "background.js"
+  }
+}
+

@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { detectLLMProvider, buildLLMHeaders, buildLLMRequestBody, parseLLMResponse } from './llmProvider';
 
 interface ReviewArgs {
   sectionName: string;
@@ -50,33 +51,20 @@ export async function reviewSectionWithLLM({ sectionName, content }: ReviewArgs)
     throw new Error('LLM review configuration missing (LLM_REVIEW_API_URL / LLM_REVIEW_API_KEY).');
   }
 
-  const payload = {
-    ...(model ? { model } : {}),
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          {
-            text: systemInstructions,
-          },
-          {
-            text: `Section Name: ${sectionName}\nContent:\n"""\n${content}\n"""`,
-          },
-          {
-            text: 'Return a JSON object with keys section_name and review_html only.',
-          },
-        ],
-      },
-    ],
-  };
+  // Auto-detect provider based on URL or API key format
+  const provider = detectLLMProvider(apiUrl, apiKey);
+  const headers = buildLLMHeaders(provider, apiKey);
+  
+  const prompt = `${systemInstructions}\n\nSection Name: ${sectionName}\nContent:\n"""\n${content}\n"""\n\nReturn a JSON object with keys section_name and review_html only.`;
+  const body = buildLLMRequestBody(provider, { apiUrl, apiKey, model }, {
+    prompt,
+    maxTokens: 2048,
+  });
 
   const response = await fetch(apiUrl, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey,
-    },
-    body: JSON.stringify(payload),
+    headers,
+    body: JSON.stringify(body),
   });
 
   const raw = await response.text();
@@ -88,10 +76,29 @@ export async function reviewSectionWithLLM({ sectionName, content }: ReviewArgs)
   try {
     const json = JSON.parse(raw) as any;
 
+    // Check for direct review_html in response (unlikely but possible)
     if (json?.review_html) {
       return normalizeReview(sectionName, json as ReviewResponse);
     }
 
+    // Extract text content using provider-specific parsing
+    const textContent = parseLLMResponse(provider, json);
+    
+    if (textContent) {
+      const blocks = extractJsonBlocks(textContent);
+      for (const block of blocks) {
+        try {
+          const parsed = JSON.parse(block) as ReviewResponse;
+          if (parsed?.review_html) {
+            return normalizeReview(sectionName, parsed);
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    // Fallback: try parsing Google Gemini format directly
     const candidates = Array.isArray(json?.candidates) ? json.candidates : [];
     for (const candidate of candidates) {
       const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];

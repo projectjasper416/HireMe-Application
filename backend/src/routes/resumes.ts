@@ -4,6 +4,8 @@ import { requireAuth, type AuthenticatedRequest } from '../middleware/auth';
 import { supabaseAdmin } from '../config/supabase';
 import { extractContactSectionWithLLM, parseResumeWithLLM } from '../services/llmParser';
 import { reviewSectionWithLLM } from '../services/reviewLLM';
+import { tailorSectionWithLLM } from '../services/tailorLLM';
+import { renderResumePdf } from '../services/exportResume';
 import type { ResumeReview, ResumeSection } from '../types/resume';
 
 function sanitizeUnicode(str: string): string {
@@ -171,7 +173,7 @@ resumeRouter.get('/:resumeId/sections', async (req: AuthenticatedRequest, res) =
 
   const { data: reviewData, error: reviewError } = await supabaseAdmin
     .from('resume_ai_reviews')
-    .select('section_name, ai_suggestions_html, created_at')
+    .select('section_name, ai_suggestions_html, raw_data, final_updated, created_at')
     .eq('resume_id', resumeId);
 
   if (reviewError) {
@@ -183,20 +185,171 @@ resumeRouter.get('/:resumeId/sections', async (req: AuthenticatedRequest, res) =
       acc[review.section_name] = {
         section_name: review.section_name,
         ai_suggestions_html: review.ai_suggestions_html,
+        raw_data: review.raw_data,
+        final_updated: review.final_updated,
         created_at: review.created_at,
       };
       return acc;
     }, {}) ?? {};
 
-  const sectionsWithReview = (data.sections as ResumeSection[]).map((section) => ({
-    ...section,
-    ai_review: reviewsBySection[section.heading] ?? null,
-  }));
+  const sectionsWithReview = (data.sections as ResumeSection[]).map((section) => {
+    const review = reviewsBySection[section.heading];
+    // If there is a final_updated version AND we are not requesting original, use that as the body
+    const useOriginal = req.query.original === 'true';
+    const body = (!useOriginal && review?.final_updated) ? review.final_updated : section.body;
+    return {
+      ...section,
+      body,
+      ai_review: review ?? null,
+    };
+  });
 
   return res.json({
     sections: sectionsWithReview,
     created_at: data.created_at,
   });
+});
+
+function acceptTailoringChanges(html: string): string {
+  // 1. Remove <del>...</del> and its content
+  let text = html.replace(/<del[^>]*>[\s\S]*?<\/del>/gi, '');
+
+  // 2. Remove <ins> tags but keep content
+  text = text.replace(/<ins[^>]*>([\s\S]*?)<\/ins>/gi, '$1');
+
+  // 3. Handle lists: convert <li> to bullets
+  text = text.replace(/<li[^>]*>/gi, '\n• ');
+  text = text.replace(/<\/li>/gi, '\n');
+  text = text.replace(/<\/ul>/gi, '\n');
+  text = text.replace(/<\/ol>/gi, '\n');
+
+  // 4. Replace <br>, <p>, <div> with newlines
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<\/p>/gi, '\n');
+  text = text.replace(/<\/div>/gi, '\n');
+
+  // 5. Remove all other tags
+  text = text.replace(/<[^>]+>/g, '');
+
+  // 6. Decode HTML entities
+  text = text
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+
+  // 7. Fix multiple newlines and trim
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+resumeRouter.post('/:resumeId/export', async (req: AuthenticatedRequest, res) => {
+  const { resumeId } = req.params;
+  const { templateId, jobId } = (req.body ?? {}) as {
+    templateId?: string;
+    jobId?: string;
+  };
+
+  if (!templateId) {
+    return res.status(400).json({ error: 'templateId is required' });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('resumes')
+    .select('sections, original_name')
+    .eq('id', resumeId)
+    .eq('user_id', req.user!.id)
+    .maybeSingle();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Resume not found' });
+  }
+
+  let sections = (data.sections as ResumeSection[]) ?? [];
+  if (sections.length === 0) {
+    return res.status(400).json({ error: 'Resume has no sections to export' });
+  }
+
+  // For AI Review exports (no jobId): merge final_updated or ai_suggestions_html
+  if (!jobId) {
+    const { data: reviewData } = await supabaseAdmin
+      .from('resume_ai_reviews')
+      .select('section_name, final_updated, ai_suggestions_html, raw_data')
+      .eq('resume_id', resumeId);
+
+    if (reviewData) {
+      const updates = reviewData.reduce((acc: Record<string, { body: string; raw_body?: any }>, review: any) => {
+        // Use final_updated if available, otherwise ai_suggestions_html
+        const content = review.final_updated || review.ai_suggestions_html;
+        if (content) {
+          acc[review.section_name] = {
+            body: content,
+            // Only use saved raw_body if we're using ai_suggestions (not final_updated)
+            // This ensures user edits are visible in PDF
+            raw_body: review.final_updated ? undefined : (review.raw_data ? JSON.parse(review.raw_data) : undefined),
+          };
+        }
+        return acc;
+      }, {} as Record<string, { body: string; raw_body?: any }>);
+
+      sections = sections.map((section) => {
+        const update = updates[section.heading];
+        if (update) {
+          return {
+            ...section,
+            body: update.body,
+            raw_body: update.raw_body,
+          };
+        }
+        return section;
+      });
+    }
+  }
+  // For AI Tailor exports (jobId provided): fetch tailorings from database
+  else {
+    const { data: tailorings, error: tailorError } = await supabaseAdmin
+      .from('resume_ai_tailorings')
+      .select('section_name, tailored_html, final_updated')
+      .eq('resume_id', resumeId)
+      .eq('job_id', jobId);
+
+    if (!tailorError && tailorings) {
+      sections = sections.map((section) => {
+        const match = tailorings.find((t) => t.section_name === section.heading);
+        if (match) {
+          // Use final_updated if available, otherwise tailored_html
+          const content = match.final_updated || match.tailored_html;
+          if (content) {
+            return {
+              ...section,
+              body: acceptTailoringChanges(content),
+              // Clear raw_body when using tailored content
+              raw_body: undefined,
+            };
+          }
+        }
+        return section;
+      });
+    }
+  }
+
+
+  try {
+    const pdfBuffer = await renderResumePdf(sections, templateId);
+    const safeName =
+      typeof data.original_name === 'string'
+        ? data.original_name.replace(/\.[^/.]+$/, '').replace(/[^\w\-]+/g, '_')
+        : 'resume';
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error('Failed to render resume PDF', err);
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    res.status(500).json({ error: 'Failed to export resume', detail: message });
+  }
 });
 
 resumeRouter.post('/:resumeId/review', async (req: AuthenticatedRequest, res) => {
@@ -223,8 +376,9 @@ resumeRouter.post('/:resumeId/review', async (req: AuthenticatedRequest, res) =>
         content: section.body,
       });
       results.push({
-        section_name: review.section_name ?? section.heading,
+        section_name: section.heading, // Enforce original section name
         ai_suggestions_html: review.review_html,
+        raw_data: section.body,
         created_at: new Date().toISOString(),
       });
     } catch (err) {
@@ -243,6 +397,8 @@ resumeRouter.post('/:resumeId/review', async (req: AuthenticatedRequest, res) =>
           resume_id: resumeId,
           section_name: review.section_name,
           ai_suggestions_html: review.ai_suggestions_html,
+          raw_data: review.raw_data,
+          final_updated: null, // Clear previous edits so new suggestions are shown
         })),
         { onConflict: 'resume_id,section_name' }
       );
@@ -253,6 +409,227 @@ resumeRouter.post('/:resumeId/review', async (req: AuthenticatedRequest, res) =>
   }
 
   return res.json({ reviews: results });
+});
+
+resumeRouter.post('/:resumeId/tailor', async (req: AuthenticatedRequest, res) => {
+  const { resumeId } = req.params;
+  const { jobId, jobDescription, keywords, sectionName } = req.body as {
+    jobId?: string;
+    jobDescription?: string;
+    keywords?: string[];
+    sectionName?: string;
+  };
+
+  if (!jobId && (!jobDescription || !keywords)) {
+    return res.status(400).json({ error: 'Either jobId OR (jobDescription AND keywords) must be provided' });
+  }
+
+  const { data: resume, error } = await supabaseAdmin
+    .from('resumes')
+    .select('sections')
+    .eq('id', resumeId)
+    .eq('user_id', req.user!.id)
+    .maybeSingle();
+
+  if (error || !resume) {
+    return res.status(404).json({ error: 'Resume not found' });
+  }
+
+  let targetJD = jobDescription;
+  let targetKeywords = keywords;
+
+  if (jobId) {
+    const { data: job, error: jobError } = await supabaseAdmin
+      .from('jobs')
+      .select('job_description, keywords')
+      .eq('id', jobId)
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
+
+    if (jobError || !job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    targetJD = job.job_description;
+    const rawKeywords = job.keywords as any;
+    if (rawKeywords?.categories && Array.isArray(rawKeywords.categories)) {
+      targetKeywords = rawKeywords.categories.flatMap((c: any) => c.keywords || []);
+    } else if (Array.isArray(rawKeywords)) {
+      targetKeywords = rawKeywords;
+    } else {
+      targetKeywords = [];
+    }
+  }
+
+  if (!targetJD) {
+    return res.status(400).json({ error: 'Job description is missing' });
+  }
+
+  let sections = resume.sections as ResumeSection[];
+
+  // We intentionally DO NOT merge final_updated here.
+  // Tailoring should always start from the ORIGINAL resume content.
+
+  if (sectionName) {
+    sections = sections.filter((s) => s.heading === sectionName);
+    if (sections.length === 0) {
+      return res.status(404).json({ error: 'Section not found' });
+    }
+  }
+
+  const results: any[] = [];
+
+  for (const section of sections) {
+    try {
+      // Skip contact info for tailoring usually, but let's keep it consistent or skip if needed.
+      // The prompt handles it (instructions say "For contact information, only normalize...").
+      const tailorResult = await tailorSectionWithLLM({
+        sectionName: section.heading,
+        content: section.body,
+        jobDescription: targetJD,
+        keywords: targetKeywords || [],
+      });
+
+      results.push({
+        resume_id: resumeId,
+        job_id: jobId || null,
+        section_name: section.heading, // Enforce original section name
+        tailored_html: tailorResult.tailored_html,
+        original_text: section.body,
+        final_updated: null,
+      });
+    } catch (err) {
+      console.error(`Error tailoring section ${section.heading}:`, err);
+      // Continue with other sections or fail? Let's continue and return what we have, or fail partially.
+      // For now, let's just log and continue.
+    }
+  }
+
+  if (results.length > 0) {
+    // Delete existing tailorings for this resume+job to avoid duplicates/stale data
+    if (jobId) {
+      await supabaseAdmin
+        .from('resume_ai_tailorings')
+        .delete()
+        .eq('resume_id', resumeId)
+        .eq('job_id', jobId);
+    } else {
+      // If no job ID, we might want to clear previous ad-hoc tailorings or just insert new ones.
+      // Since unique constraint is (resume_id, job_id, section_name), and job_id is nullable...
+      // We should probably clear where job_id is null.
+      await supabaseAdmin
+        .from('resume_ai_tailorings')
+        .delete()
+        .eq('resume_id', resumeId)
+        .is('job_id', null);
+    }
+
+    const { error: insertError } = await supabaseAdmin
+      .from('resume_ai_tailorings')
+      .insert(results);
+
+    if (insertError) {
+      return res.status(400).json({ error: insertError.message });
+    }
+  }
+
+  return res.json({ tailorings: results });
+});
+
+resumeRouter.get('/:resumeId/tailorings', async (req: AuthenticatedRequest, res) => {
+  const { resumeId } = req.params;
+  const { jobId } = req.query;
+
+  let query = supabaseAdmin
+    .from('resume_ai_tailorings')
+    .select('*, final_updated') // Explicitly selecting final_updated just in case * doesn't catch it immediately or for clarity
+    .eq('resume_id', resumeId);
+
+  if (jobId) {
+    query = query.eq('job_id', jobId);
+  } else {
+    query = query.is('job_id', null);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  return res.json({ tailorings: data });
+});
+
+resumeRouter.put('/:resumeId/tailorings', async (req: AuthenticatedRequest, res) => {
+  const { resumeId } = req.params;
+  const { jobId, sectionName, tailoredHtml, originalText } = req.body as {
+    jobId: string;
+    sectionName: string;
+    tailoredHtml: string;
+    originalText: string;
+  };
+
+  if (!jobId || !sectionName || tailoredHtml === undefined || originalText === undefined) {
+    return res.status(400).json({ error: 'Missing required fields: jobId, sectionName, tailoredHtml, originalText' });
+  }
+
+  // Verify resume ownership
+  const { data: resume, error: resumeError } = await supabaseAdmin
+    .from('resumes')
+    .select('id')
+    .eq('id', resumeId)
+    .eq('user_id', req.user!.id)
+    .maybeSingle();
+
+  if (resumeError || !resume) {
+    return res.status(404).json({ error: 'Resume not found' });
+  }
+
+  // Upsert tailoring
+  // Check if tailoring exists
+  const { data: existing } = await supabaseAdmin
+    .from('resume_ai_tailorings')
+    .select('*')
+    .eq('resume_id', resumeId)
+    .eq('job_id', jobId)
+    .eq('section_name', sectionName)
+    .maybeSingle();
+
+  let data;
+  let opError;
+
+  if (existing) {
+    const { data: updated, error } = await supabaseAdmin
+      .from('resume_ai_tailorings')
+      .update({ final_updated: sanitizeUnicode(tailoredHtml) })
+      .eq('resume_id', resumeId)
+      .eq('job_id', jobId)
+      .eq('section_name', sectionName)
+      .select()
+      .single();
+    data = updated;
+    opError = error;
+  } else {
+    const { data: inserted, error } = await supabaseAdmin
+      .from('resume_ai_tailorings')
+      .insert({
+        resume_id: resumeId,
+        job_id: jobId,
+        section_name: sectionName,
+        tailored_html: sanitizeUnicode(tailoredHtml),
+        final_updated: sanitizeUnicode(tailoredHtml),
+        original_text: sanitizeUnicode(originalText),
+      })
+      .select()
+      .single();
+    data = inserted;
+    opError = error;
+  }
+
+  if (opError) {
+    return res.status(400).json({ error: opError.message });
+  }
+
+  return res.json({ tailoring: data });
 });
 
 resumeRouter.put('/:resumeId/sections/:index', async (req: AuthenticatedRequest, res) => {
@@ -289,18 +666,42 @@ resumeRouter.put('/:resumeId/sections/:index', async (req: AuthenticatedRequest,
     raw_body: rawBody !== undefined ? sanitizeValue(rawBody) : sections[sectionIndex].raw_body,
   };
 
-  const normalizedContent = sections.map((section) => `${section.heading}\n${section.body}`).join('\n\n');
+  // We DO NOT update the 'resumes' table anymore to preserve original content.
+  // Instead, we upsert into 'resume_ai_reviews' with final_updated.
 
-  const { error: updateError } = await supabaseAdmin
-    .from('resumes')
-    .update({
-      sections,
-      original_content: normalizedContent,
-    })
-    .eq('id', resumeId);
+  const sectionHeading = sections[sectionIndex].heading;
 
-  if (updateError) {
-    return res.status(400).json({ error: updateError.message });
+  // Check if review exists
+  const { data: existingReview } = await supabaseAdmin
+    .from('resume_ai_reviews')
+    .select('*')
+    .eq('resume_id', resumeId)
+    .eq('section_name', sectionHeading)
+    .maybeSingle();
+
+  if (existingReview) {
+    const { error: updateError } = await supabaseAdmin
+      .from('resume_ai_reviews')
+      .update({
+        final_updated: sanitizeUnicode(content),
+        raw_data: rawBody !== undefined ? JSON.stringify(sanitizeValue(rawBody)) : existingReview.raw_data,
+      })
+      .eq('resume_id', resumeId)
+      .eq('section_name', sectionHeading);
+
+    if (updateError) return res.status(400).json({ error: updateError.message });
+  } else {
+    const { error: insertError } = await supabaseAdmin
+      .from('resume_ai_reviews')
+      .insert({
+        resume_id: resumeId,
+        section_name: sectionHeading,
+        final_updated: sanitizeUnicode(content),
+        raw_data: rawBody !== undefined ? JSON.stringify(sanitizeValue(rawBody)) : sections[sectionIndex].body,
+        ai_suggestions_html: '', // No AI suggestions yet
+      });
+
+    if (insertError) return res.status(400).json({ error: insertError.message });
   }
 
   return res.json({ section: sections[sectionIndex] });

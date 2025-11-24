@@ -6,6 +6,7 @@ This guide documents Step 2 of HireMe: Resume Management + AI Review. It builds 
 - AI-powered section reviews with redline suggestions
 - Inline editing + save flow per section
 - Dedicated dashboard experience (upload + action buttons)
+- PDF export with selectable templates
 
 Inline comments in the code reference PRD section 6.1 and TDD sections 3.2, 4.2, and 5.
 
@@ -17,6 +18,7 @@ Inline comments in the code reference PRD section 6.1 and TDD sections 3.2, 4.2,
 - Inline editing controls: accept all, revert, manual edit, save.
 - AI suggestions stored for auditing (`resume_ai_reviews` table).
 - Clean dashboard: Upload card + action buttons (AI Review, AI Tailor placeholder).
+- Download-ready PDF export once all sections are saved.
 
 ---
 
@@ -101,6 +103,13 @@ All routes require Bearer JWT (Supabase access token).
 - `PUT /resumes/:resumeId/sections/:index`
   - Persists user-edited section content back to Supabase.
 
+- `GET /templates`
+  - Returns available resume templates (id, name, description).
+
+- `POST /resumes/:resumeId/export`
+  - Body: `{ "templateId": "experienced" | "entry" }`
+  - Generates a PDF using the selected template and edited sections (aim for <10s render time).
+
 Backend implementation highlights:
 - `backend/src/routes/resumes.ts`
 - `backend/src/services/llmParser.ts`
@@ -135,6 +144,7 @@ npm run dev
    - Inline edit via contentEditable area, Accept All (strip `<del>/<ins>`), Revert, Save Section.
    - Suggestions displayed using sanitized HTML (DOMPurify) to avoid XSS.
 4. Updates persist to Supabase; reviewing again overwrites existing suggestions.
+5. After every section is saved, “Download Updated Resume” becomes active → choose a template → download PDF.
 
 ### Run Frontend
 ```
@@ -154,6 +164,7 @@ Ensure `VITE_API_BASE_URL` points to the backend and Supabase credentials remain
 - [ ] Manual edits + Save Section persist (refresh retains changes).
 - [ ] Frontend sanitizes suggestions (`<del>` red, `<ins>` green).
 - [ ] Authentication + session refresh continue to work.
+- [ ] Download modal loads templates and PDF generation succeeds (<10s) for each option.
 
 ---
 

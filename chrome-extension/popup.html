@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>HireMe Job Tracker</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header>
+        <h1>Quick Save</h1>
+        <p class="subtitle">Scrape the current page and add it to your Job Tracker.</p>
+      </header>
+
+      <section id="status" class="status hidden"></section>
+
+      <form id="job-form">
+        <label>
+          Company
+          <input type="text" id="company" name="company" required />
+        </label>
+        <label>
+          Role
+          <input type="text" id="role" name="role" required />
+        </label>
+        <label>
+          Job Description
+          <textarea id="jobDescription" name="jobDescription" rows="6"></textarea>
+        </label>
+        <label>
+          Status
+          <select id="statusSelect" name="status">
+            <option value="Interested">Interested</option>
+            <option value="Applied">Applied</option>
+            <option value="Interview">Interview</option>
+            <option value="Offer">Offer</option>
+          </select>
+        </label>
+        <label>
+          Notes
+          <textarea id="notes" name="notes" rows="3" placeholder="Optional notes..."></textarea>
+        </label>
+        <button type="submit" id="saveBtn">Save to Tracker</button>
+      </form>
+
+      <footer>
+        <p>
+          Configure API settings in
+          <a href="#" id="openOptions">extension options</a>.
+        </p>
+      </footer>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
+

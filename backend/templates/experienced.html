@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{{contact.name}} — Resume</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        margin: 0;
+        padding: 32px;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      .wrapper {
+        max-width: 900px;
+        margin: 0 auto;
+        background: #ffffff;
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 24px 48px -24px rgba(15, 23, 42, 0.35);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+      }
+      header {
+        display: flex;
+        flex-direction: row;
+        align-items: flex-end;
+        justify-content: space-between;
+        padding: 48px 56px 32px;
+        background: linear-gradient(135deg, #1d4ed8, #0f172a);
+        color: #f8fafc;
+      }
+      header h1 {
+        font-size: 38px;
+        margin: 0 0 8px 0;
+        letter-spacing: 0.04em;
+      }
+      .contact {
+        font-size: 14px;
+        line-height: 1.8;
+      }
+      .contact a {
+        color: #bfdbfe;
+        text-decoration: none;
+      }
+      main {
+        padding: 40px 56px 48px;
+      }
+      section {
+        margin-bottom: 36px;
+      }
+      section h2 {
+        font-size: 20px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        margin: 0 0 18px 0;
+        position: relative;
+        padding-left: 12px;
+        color: #1e293b;
+      }
+      section h2::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 3px;
+        bottom: 3px;
+        width: 3px;
+        background: linear-gradient(180deg, #1d4ed8, #38bdf8);
+        border-radius: 999px;
+      }
+      section p {
+        margin: 0 0 10px 0;
+        font-size: 14px;
+        line-height: 1.6;
+        color: #334155;
+      }
+      section ul {
+        margin: 0;
+        padding-left: 22px;
+        list-style-type: disc;
+        color: #1e293b;
+      }
+      section li {
+        margin-bottom: 8px;
+        line-height: 1.6;
+        font-size: 14px;
+      }
+      .entry {
+        margin-bottom: 16px;
+      }
+      .entry:last-child {
+        margin-bottom: 0;
+      }
+      .entry-primary {
+        font-size: 15px;
+        font-weight: 600;
+        color: #111827;
+      }
+      .entry-secondary {
+        font-size: 14px;
+        color: #1f2937;
+        margin-top: 2px;
+      }
+      .entry-meta {
+        font-size: 13px;
+        color: #64748b;
+        margin-top: 4px;
+      }
+      footer {
+        padding: 18px 56px 32px;
+        font-size: 11px;
+        color: #64748b;
+        border-top: 1px solid rgba(148, 163, 184, 0.2);
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <div>
+          <h1>{{contact.name}}</h1>
+        </div>
+        <div class="contact">
+          {{#if contact.email}}<div>Email: <a href="mailto:{{contact.email}}">{{contact.email}}</a></div>{{/if}}
+          {{#if contact.phone}}<div>Phone: {{contact.phone}}</div>{{/if}}
+          {{#if contact.linkedin}}<div>LinkedIn: <a href="https://{{contact.linkedin}}">{{contact.linkedin}}</a></div>{{/if}}
+          {{#if contact.website}}<div>Website: <a href="https://{{contact.website}}">{{contact.website}}</a></div>{{/if}}
+          {{#if contact.address}}<div>Location: {{contact.address}}</div>{{/if}}
+          {{#each contact.other}}<div>{{this}}</div>{{/each}}
+        </div>
+      </header>
+      <main>
+        {{#each sections}}
+          <section>
+            <h2>{{heading}}</h2>
+            {{#if summary.length}}
+              {{#each summary}}
+                <p>{{this}}</p>
+              {{/each}}
+            {{/if}}
+            {{#if entries.length}}
+              {{#each entries}}
+                <div class="entry">
+                  {{#if primary}}
+                    <p class="entry-primary">{{primary}}</p>
+                  {{/if}}
+                  {{#if secondary}}
+                    <p class="entry-secondary">{{secondary}}</p>
+                  {{/if}}
+                  {{#if meta}}
+                    <p class="entry-meta">{{meta}}</p>
+                  {{/if}}
+                  {{#if bullets.length}}
+                    <ul>
+                      {{#each bullets}}
+                        <li>{{this}}</li>
+                      {{/each}}
+                    </ul>
+                  {{/if}}
+                </div>
+              {{/each}}
+            {{/if}}
+            {{#if bullets.length}}
+              <ul>
+                {{#each bullets}}
+                  <li>{{this}}</li>
+                {{/each}}
+              </ul>
+            {{/if}}
+          </section>
+        {{/each}}
+      </main>
+      <footer>
+        Generated via HireMe · {{generatedAt}}
+      </footer>
+    </div>
+  </body>
+</html>
+

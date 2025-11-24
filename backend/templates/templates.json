@@ -1,0 +1,15 @@
+[
+  {
+    "id": "experienced",
+    "name": "Experienced Professional",
+    "description": "Clean two-column layout with bold header suitable for senior roles.",
+    "file": "experienced.html"
+  },
+  {
+    "id": "entry",
+    "name": "Entry Level Data Scientist",
+    "description": "Modern single-column layout tailored for early career data professionals.",
+    "file": "entry-level.html"
+  }
+]
+

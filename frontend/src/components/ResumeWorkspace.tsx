@@ -169,10 +169,10 @@ export function ResumeWorkspace({ apiBaseUrl, token }: Props) {
                     AI Review
                   </button>
                   <button
-                    disabled
-                    className="rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-400"
+                    onClick={() => navigate(`/ai-tailor/${resume.id}`)}
+                    className="rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-600 transition-all hover:border-purple-200 hover:bg-purple-50 hover:text-purple-700"
                   >
-                    AI Tailor (Coming Soon)
+                    AI Tailor
                   </button>
                 </div>
               </div>

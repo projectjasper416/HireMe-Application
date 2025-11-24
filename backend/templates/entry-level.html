@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{{contact.name}} — Resume</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: "Inter", "Segoe UI", sans-serif;
+        background: #ffffff;
+        padding: 48px 36px;
+        color: #111827;
+        line-height: 1.6;
+      }
+      .container {
+        max-width: 820px;
+        margin: 0 auto;
+      }
+      .header {
+        text-align: center;
+        padding-bottom: 24px;
+        border-bottom: 2px solid #1f2937;
+      }
+      .header h1 {
+        font-size: 36px;
+        margin: 0;
+        letter-spacing: 0.05em;
+      }
+      .header .tagline {
+        color: #6b7280;
+        font-size: 16px;
+        margin-top: 6px;
+      }
+      .header .contact {
+        margin-top: 16px;
+        font-size: 13px;
+        color: #374151;
+      }
+      .header .contact span {
+        display: inline-block;
+        margin: 0 8px;
+      }
+      section {
+        margin-top: 32px;
+      }
+      section h2 {
+        font-size: 18px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: #1f2937;
+        margin-bottom: 14px;
+        border-bottom: 1px solid #e5e7eb;
+        padding-bottom: 6px;
+      }
+      section p {
+        margin: 0 0 10px 0;
+        font-size: 14px;
+        color: #1f2937;
+      }
+      section ul {
+        margin: 0;
+        padding-left: 20px;
+        font-size: 14px;
+        color: #1f2937;
+      }
+      section li {
+        margin-bottom: 8px;
+      }
+      .entry {
+        margin-bottom: 16px;
+      }
+      .entry:last-child {
+        margin-bottom: 0;
+      }
+      .entry-primary {
+        font-size: 15px;
+        font-weight: 600;
+        color: #111827;
+      }
+      .entry-secondary {
+        font-size: 14px;
+        color: #1f2937;
+        margin-top: 2px;
+      }
+      .entry-meta {
+        font-size: 13px;
+        color: #6b7280;
+        margin-top: 4px;
+      }
+      footer {
+        text-align: center;
+        margin-top: 32px;
+        font-size: 11px;
+        color: #9ca3af;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>{{contact.name}}</h1>
+        {{#if contact.other.[0]}}
+          <div class="tagline">{{contact.other.[0]}}</div>
+        {{/if}}
+        <div class="contact">
+          {{#if contact.email}}<span>{{contact.email}}</span>{{/if}}
+          {{#if contact.phone}}<span>{{contact.phone}}</span>{{/if}}
+          {{#if contact.linkedin}}<span>{{contact.linkedin}}</span>{{/if}}
+          {{#if contact.website}}<span>{{contact.website}}</span>{{/if}}
+          {{#if contact.address}}<span>{{contact.address}}</span>{{/if}}
+        </div>
+      </div>
+
+      {{#each sections}}
+        <section>
+          <h2>{{heading}}</h2>
+          {{#if summary.length}}
+            {{#each summary}}
+              <p>{{this}}</p>
+            {{/each}}
+          {{/if}}
+          {{#if entries.length}}
+            {{#each entries}}
+              <div class="entry">
+                {{#if primary}}
+                  <p class="entry-primary">{{primary}}</p>
+                {{/if}}
+                {{#if secondary}}
+                  <p class="entry-secondary">{{secondary}}</p>
+                {{/if}}
+                {{#if meta}}
+                  <p class="entry-meta">{{meta}}</p>
+                {{/if}}
+                {{#if bullets.length}}
+                  <ul>
+                    {{#each bullets}}
+                      <li>{{this}}</li>
+                    {{/each}}
+                  </ul>
+                {{/if}}
+              </div>
+            {{/each}}
+          {{/if}}
+          {{#if bullets.length}}
+            <ul>
+              {{#each bullets}}
+                <li>{{this}}</li>
+              {{/each}}
+            </ul>
+          {{/if}}
+        </section>
+      {{/each}}
+
+      <footer>Generated via HireMe · {{generatedAt}}</footer>
+    </div>
+  </body>
+</html>
+

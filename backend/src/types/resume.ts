@@ -17,6 +17,8 @@ export interface ResumeSection {
 export interface ResumeReview {
   section_name: string;
   ai_suggestions_html: string;
+  raw_data?: string;
+  final_updated?: string;
   created_at: string;
 }
 

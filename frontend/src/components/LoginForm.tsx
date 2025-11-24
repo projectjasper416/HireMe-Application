@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
+import { supabase } from '../lib/supabase';
 
 interface Props {
   apiBaseUrl: string;
@@ -24,7 +25,23 @@ export function LoginForm({ apiBaseUrl, onAuthed }: Props) {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Login failed');
-      if (json.accessToken) onAuthed({ token: json.accessToken, user: json.user });
+      
+      // Set the session in Supabase client so it persists across page refreshes
+      if (json.accessToken && json.refreshToken) {
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: json.accessToken,
+          refresh_token: json.refreshToken,
+        });
+        
+        if (sessionError) {
+          console.error('Error setting session:', sessionError);
+          // Still proceed with authentication even if session setting fails
+        }
+      }
+      
+      if (json.accessToken) {
+        onAuthed({ token: json.accessToken, user: json.user });
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
