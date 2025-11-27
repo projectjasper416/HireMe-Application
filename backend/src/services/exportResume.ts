@@ -154,45 +154,41 @@ function parseRawBody(rawBody: unknown): { summary: string[]; entries: SectionEn
 
   // If rawBody is an array, treat each item as an entry
   if (Array.isArray(rawBody)) {
+    //console.log('[parseRawBody] Processing array with', rawBody.length, 'items');
     for (const item of rawBody) {
       if (typeof item === 'object' && item !== null) {
+        //console.log('[parseRawBody] Raw item:', JSON.stringify(item, null, 2));
         const entry: SectionEntryRenderable = { bullets: [] };
         const obj = item as Record<string, unknown>;
 
-        // Extract primary field (company, school, institution, university, name, title for projects)
+        // Extract fields in CORRECT VISUAL ORDER
+        // For Experience: company, title, dates, location
+        // For Education: institution, degree, dates, location, gpa
+
+        // Primary field (company, institution, project name, etc.)
         if (obj.company) {
           entry.primary = String(obj.company);
-        } else if (obj.school || obj.institution || obj.university) {
-          entry.primary = String(obj.school || obj.institution || obj.university);
-        } else if (obj.name) {
-          entry.primary = String(obj.name);
-        } else if (obj.title && !obj.company) {
-          // For projects/certifications, title might be primary
-          entry.primary = String(obj.title);
+        } else if (obj.institution || obj.school || obj.university) {
+          entry.primary = String(obj.institution || obj.school || obj.university);
+        } else if (obj.name || obj.projectName) {
+          entry.primary = String(obj.name || obj.projectName);
+        } else if (obj.primary) {
+          entry.primary = String(obj.primary);
         }
 
-        // Extract secondary field (title, role, position, degree, major)
-        if (obj.title && obj.company) {
-          // If we have company, title is secondary
-          entry.secondary = String(obj.title);
-        } else if (obj.role) {
-          entry.secondary = String(obj.role);
-        } else if (obj.position) {
-          entry.secondary = String(obj.position);
+        // Secondary field (title, degree, role)
+        if (obj.title || obj.role) {
+          entry.secondary = String(obj.title || obj.role);
         } else if (obj.degree || obj.major) {
           entry.secondary = String(obj.degree || obj.major);
-        } else if (obj.issuer) {
-          // For certifications, issuer might be secondary
-          entry.secondary = String(obj.issuer);
+        } else if (obj.secondary) {
+          entry.secondary = String(obj.secondary);
         }
 
-        // Extract meta field (dates, location, gpa)
+        // Meta field (dates, location, gpa combined)
         const metaParts: string[] = [];
-        if (obj.date || obj.dates) {
-          metaParts.push(String(obj.date || obj.dates));
-        }
-        if (obj.graduationDate || obj.graduation) {
-          metaParts.push(String(obj.graduationDate || obj.graduation));
+        if (obj.dates || obj.date || obj.graduationDate) {
+          metaParts.push(String(obj.dates || obj.date || obj.graduationDate));
         }
         if (obj.location) {
           metaParts.push(String(obj.location));
@@ -223,6 +219,7 @@ function parseRawBody(rawBody: unknown): { summary: string[]; entries: SectionEn
 
         // If we have at least primary or bullets, add as entry
         if (entry.primary || entry.bullets.length > 0) {
+          //console.log('[parseRawBody] Entry:', JSON.stringify(entry, null, 2));
           entries.push(entry);
         }
       } else if (typeof item === 'string') {
@@ -234,7 +231,7 @@ function parseRawBody(rawBody: unknown): { summary: string[]; entries: SectionEn
 
   // If rawBody is an object, check for common structures
   const obj = rawBody as Record<string, unknown>;
-  
+
   // Check for entries array
   if (Array.isArray(obj.entries)) {
     for (const item of obj.entries) {
@@ -291,7 +288,7 @@ function parseSectionBody(body: string, rawBody?: unknown): { summary: string[];
     const entryPattern = /^(.+?)\s*(?:—|–|-|at|\/|\|)\s*(.+)$/;
     const datePattern = /(\d{4}|\w+\s*'?\d{2})\s*(?:-|–|—|to)\s*(\w+\s*'?\d{2}|Present|Current)/i;
     const dateOnlyPattern = /^(\w+\s*'?\d{2}|\d{4})\s*(?:-|–|—|to)\s*(\w+\s*'?\d{2}|Present|Current|Now)$/i;
-    
+
     // Pattern to detect company/school names (all caps or title case, often standalone)
     const companyNamePattern = /^[A-Z][A-Za-z\s&.,-]+$/;
     const isLikelyCompanyName = companyNamePattern.test(line) && line.length > 3 && line.length < 50;
@@ -383,13 +380,13 @@ function parseSectionBody(body: string, rawBody?: unknown): { summary: string[];
 function formatSectionsForExport(sections: ResumeSection[]): SectionRenderable[] {
   // Sections that should only have summary text, not entries
   const summaryOnlySections = ['summary', 'objective', 'profile', 'about', 'overview', 'introduction'];
-  
+
   return sections
     .filter((section) => !section.heading.toLowerCase().includes('contact'))
     .map((section) => {
       const headingLower = section.heading.toLowerCase();
       const isSummaryOnly = summaryOnlySections.some((key) => headingLower.includes(key));
-      
+
       // For summary-only sections, force summary text only
       if (isSummaryOnly) {
         const lines = section.body.split(/\r?\n/).map((line) => normaliseLine(line)).filter(Boolean);

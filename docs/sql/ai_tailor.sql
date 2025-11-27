@@ -3,8 +3,8 @@ create table if not exists public.resume_ai_tailorings (
   resume_id uuid references public.resumes(id) on delete cascade not null,
   job_id uuid references public.jobs(id) on delete set null,
   section_name text not null,
-  tailored_html text not null,
-  original_text text,
+  tailored_suggestions text,
+  final_updated jsonb,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
   unique(resume_id, job_id, section_name)
 );

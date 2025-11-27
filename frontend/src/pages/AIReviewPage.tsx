@@ -1,6 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import DOMPurify, { Config as DOMPurifyConfig } from 'dompurify';
+import StructuredSectionRenderer from '../components/StructuredSectionRenderer';
+import {
+  parseAISuggestions,
+  StructuredSectionState,
+  acceptBullet,
+  rejectBullet,
+  updateBullet,
+  updateBulletSuggestion,
+  acceptField,
+  rejectField,
+  updateField,
+  serializeToFinalUpdated,
+  applyFinalUpdated,
+} from '../utils/structuredReviewUtils';
 
 interface SectionReview {
   heading: string;
@@ -26,6 +40,8 @@ interface SectionState {
   reviewHtml: string | null;
   editedHtml: string;
   saving: boolean;
+  // New: structured review data
+  structuredReview: StructuredSectionState | null;
 }
 
 import { ResumeExportSidebar, ResumeTemplate } from '../components/ResumeExportSidebar';
@@ -122,6 +138,16 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
           ? sanitizeHtml(section.ai_review.ai_suggestions_html)
           : null;
 
+        // Parse structured review data (new format)
+        let structuredReview = section.ai_review?.ai_suggestions_html
+          ? parseAISuggestions(section.ai_review.ai_suggestions_html)
+          : null;
+
+        // Apply saved final_updated values if they exist
+        if (structuredReview && section.ai_review?.final_updated) {
+          structuredReview = applyFinalUpdated(structuredReview, section.ai_review.final_updated);
+        }
+
         // If final_updated exists (which means section.body is the updated content), use that.
         // Otherwise, use reviewHtml if available.
         // Otherwise, use original body.
@@ -136,6 +162,7 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
           reviewHtml,
           editedHtml: initialHtml,
           saving: false,
+          structuredReview,
         };
       });
       setSections(mapped);
@@ -242,6 +269,191 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
           : item
       )
     );
+  }
+
+  // Structured review handlers
+  async function handleRegenerateBullet(sectionIndex: number, bulletId: string, context: any) {
+    if (!resumeId) return;
+
+    try {
+      const res = await fetch(
+        `${apiBaseUrl}/resumes/${resumeId}/sections/${sectionIndex}/regenerate-bullet`,
+        {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({ bulletId, bulletText: context.bulletText || '', context }),
+        }
+      );
+
+      if (!res.ok) {
+        throw new Error('Failed to regenerate bullet');
+      }
+
+      const json = await res.json();
+
+      // Update the section with new suggestion
+      setSections((prev) =>
+        prev.map((section, idx) => {
+          if (idx !== sectionIndex || !section.structuredReview) return section;
+          return {
+            ...section,
+            structuredReview: updateBulletSuggestion(
+              section.structuredReview,
+              bulletId,
+              json.suggested
+            ),
+          };
+        })
+      );
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
+  function handleUpdateBullet(sectionIndex: number, bulletId: string, newText: string) {
+    setSections((prev) => {
+      const updated = prev.map((section, idx) => {
+        if (idx !== sectionIndex || !section.structuredReview) return section;
+        const updatedReview = updateBullet(section.structuredReview, bulletId, newText);
+        return {
+          ...section,
+          structuredReview: updatedReview,
+        };
+      });
+
+      const updatedSection = updated[sectionIndex];
+      if (updatedSection?.structuredReview) {
+        saveStructuredChangesWithData(sectionIndex, updatedSection.structuredReview);
+      }
+
+      return updated;
+    });
+  }
+
+  function handleAcceptBullet(sectionIndex: number, bulletId: string) {
+    setSections((prev) => {
+      const updated = prev.map((section, idx) => {
+        if (idx !== sectionIndex || !section.structuredReview) return section;
+        const updatedReview = acceptBullet(section.structuredReview, bulletId);
+        return {
+          ...section,
+          structuredReview: updatedReview,
+        };
+      });
+
+      // Save with the updated state
+      const updatedSection = updated[sectionIndex];
+      if (updatedSection?.structuredReview) {
+        saveStructuredChangesWithData(sectionIndex, updatedSection.structuredReview);
+      }
+
+      return updated;
+    });
+  }
+
+  function handleRejectBullet(sectionIndex: number, bulletId: string) {
+    setSections((prev) => {
+      const updated = prev.map((section, idx) => {
+        if (idx !== sectionIndex || !section.structuredReview) return section;
+        const updatedReview = rejectBullet(section.structuredReview, bulletId);
+        return {
+          ...section,
+          structuredReview: updatedReview,
+        };
+      });
+
+      const updatedSection = updated[sectionIndex];
+      if (updatedSection?.structuredReview) {
+        saveStructuredChangesWithData(sectionIndex, updatedSection.structuredReview);
+      }
+
+      return updated;
+    });
+  }
+  // Field handlers
+  function handleUpdateField(sectionIndex: number, entryId: string, fieldName: string, newText: string) {
+    setSections((prev) => {
+      const updated = prev.map((section, idx) => {
+        if (idx !== sectionIndex || !section.structuredReview) return section;
+        const updatedReview = updateField(section.structuredReview, entryId, fieldName, newText);
+        return {
+          ...section,
+          structuredReview: updatedReview,
+        };
+      });
+
+      const updatedSection = updated[sectionIndex];
+      if (updatedSection?.structuredReview) {
+        saveStructuredChangesWithData(sectionIndex, updatedSection.structuredReview);
+      }
+
+      return updated;
+    });
+  }
+
+  function handleAcceptField(sectionIndex: number, entryId: string, fieldName: string) {
+    setSections((prev) => {
+      const updated = prev.map((section, idx) => {
+        if (idx !== sectionIndex || !section.structuredReview) return section;
+        const updatedReview = acceptField(section.structuredReview, entryId, fieldName);
+        return {
+          ...section,
+          structuredReview: updatedReview,
+        };
+      });
+
+      const updatedSection = updated[sectionIndex];
+      if (updatedSection?.structuredReview) {
+        saveStructuredChangesWithData(sectionIndex, updatedSection.structuredReview);
+      }
+
+      return updated;
+    });
+  }
+
+  function handleRejectField(sectionIndex: number, entryId: string, fieldName: string) {
+    setSections((prev) => {
+      const updated = prev.map((section, idx) => {
+        if (idx !== sectionIndex || !section.structuredReview) return section;
+        const updatedReview = rejectField(section.structuredReview, entryId, fieldName);
+        return {
+          ...section,
+          structuredReview: updatedReview,
+        };
+      });
+
+      const updatedSection = updated[sectionIndex];
+      if (updatedSection?.structuredReview) {
+        saveStructuredChangesWithData(sectionIndex, updatedSection.structuredReview);
+      }
+
+      return updated;
+    });
+  }
+
+  // Auto-save structured changes to database
+  async function saveStructuredChangesWithData(sectionIndex: number, structuredReview: StructuredSectionState) {
+    if (!resumeId) return;
+
+    try {
+      const finalUpdated = serializeToFinalUpdated(structuredReview);
+
+      await fetch(`${apiBaseUrl}/resumes/${resumeId}/sections/${sectionIndex}/save-structured`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ finalUpdated }),
+      });
+    } catch (err) {
+      console.error('Failed to auto-save:', err);
+    }
+  }
+
+  // Legacy function for backward compatibility
+  async function saveStructuredChanges(sectionIndex: number) {
+    const section = sections[sectionIndex];
+    if (section?.structuredReview) {
+      await saveStructuredChangesWithData(sectionIndex, section.structuredReview);
+    }
   }
 
   const isSectionDirty = (section: SectionState) =>
@@ -438,22 +650,24 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
                   </header>
 
                   <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
-                    <div
-                      className="min-h-[12rem] rounded-xl bg-gray-50 px-4 py-3 text-sm leading-relaxed text-gray-900 focus-within:ring-2 focus-within:ring-indigo-200"
-                      contentEditable
-                      suppressContentEditableWarning
-                      onInput={(e) => updateEditedHtml(index, e.currentTarget.innerHTML)}
-                      ref={(el) => {
-                        sectionRefs.current[index] = el;
-                        if (el && el.innerHTML !== section.editedHtml) {
-                          el.innerHTML = section.editedHtml;
-                        }
-                      }}
-                    />
-                    <p className="mt-2 text-xs text-gray-500">
-                      Tip: Adjust wording directly. Red <del>deletions</del> are removed words; green{' '}
-                      <ins>insertions</ins> are AI-suggested replacements.
-                    </p>
+                    {section.structuredReview ? (
+                      // Structured review with editable bullets
+                      <StructuredSectionRenderer
+                        section={section.structuredReview}
+                        onUpdateBullet={(bulletId, newText) => handleUpdateBullet(index, bulletId, newText)}
+                        onRegenerateBullet={(bulletId, context) => handleRegenerateBullet(index, bulletId, context)}
+                        onAcceptBullet={(bulletId) => handleAcceptBullet(index, bulletId)}
+                        onRejectBullet={(bulletId) => handleRejectBullet(index, bulletId)}
+                        onUpdateField={(entryId, fieldName, newText) => handleUpdateField(index, entryId, fieldName, newText)}
+                        onAcceptField={(entryId, fieldName) => handleAcceptField(index, entryId, fieldName)}
+                        onRejectField={(entryId, fieldName) => handleRejectField(index, entryId, fieldName)}
+                      />
+                    ) : (
+                      // No structured review yet
+                      <div className="min-h-[12rem] rounded-xl bg-gray-50 px-4 py-3 text-sm text-gray-500 flex items-center justify-center">
+                        <p>Run AI Review to see granular suggestions for this section.</p>
+                      </div>
+                    )}
                   </div>
                 </section>
               ))}

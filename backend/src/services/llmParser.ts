@@ -31,20 +31,22 @@ Extract sections from the resume and return JSON with a "sections" array.
 
 CRITICAL: For structured sections (Experience, Education, Projects, etc.), the "body" field MUST be an array of objects, where each object represents one entry.
 
-For Experience section, each entry should have:
+IMPORTANT: Maintain the EXACT field order as they appear visually in the resume (top to bottom).
+
+For Experience section, each entry MUST have fields in this EXACT order:
 {
   "company": "Company Name",
-  "title": "Job Title" or "role": "Job Title",
-  "dates": "Start Date - End Date" or "date": "...",
+  "title": "Job Title",
+  "dates": "Start Date - End Date",
   "location": "Location" (optional),
-  "bullets": ["Achievement 1", "Achievement 2", ...] or "description": "..."
+  "bullets": ["Achievement 1", "Achievement 2", ...]
 }
 
-For Education section, each entry should have:
+For Education section, each entry MUST have fields in this EXACT order:
 {
-  "school": "School Name" or "institution": "..." or "university": "...",
-  "degree": "Degree Name" or "major": "...",
-  "dates": "Start - End" or "graduationDate": "...",
+  "institution": "School Name",
+  "degree": "Degree Name",
+  "dates": "Start - End",
   "location": "Location" (optional),
   "gpa": "GPA" (optional),
   "bullets": ["Detail 1", ...] (optional)
@@ -52,14 +54,14 @@ For Education section, each entry should have:
 
 For Projects section, each entry should have:
 {
-  "name": "Project Name" or "title": "...",
+  "name": "Project Name",
   "dates": "..." (optional),
   "description": "..." or "bullets": [...]
 }
 
 For Certifications section, each entry should have:
 {
-  "name": "Certification Name" or "title": "...",
+  "name": "Certification Name",
   "issuer": "..." (optional),
   "date": "..." (optional)
 }
@@ -163,7 +165,11 @@ function normalizeSections(sections: RawSection[] | undefined | null): ResumeSec
   const normalized = sections
     .map((section) => {
       const heading = String(section?.heading ?? '').trim();
-      const rawBody = section?.body ?? null;
+      let rawBody = section?.body ?? null;
+
+      // Normalize field order for structured sections
+      rawBody = normalizeFieldOrder(rawBody, heading);
+
       const bodyText = formatValue(rawBody ?? '');
       return {
         heading,
@@ -174,6 +180,85 @@ function normalizeSections(sections: RawSection[] | undefined | null): ResumeSec
     .filter((section) => section.heading.length > 0 || section.body.length > 0);
 
   return normalized.length > 0 ? normalized : null;
+}
+
+/**
+ * Normalize field order in raw_body to match visual resume layout
+ */
+function normalizeFieldOrder(rawBody: any, heading: string): any {
+  if (!rawBody || typeof rawBody !== 'object') return rawBody;
+
+  const headingLower = heading.toLowerCase();
+
+  // Handle array-based structures (e.g., Experience, Education)
+  if (Array.isArray(rawBody)) {
+    return rawBody.map(entry => {
+      if (typeof entry !== 'object' || entry === null) return entry;
+
+      // For Experience entries: company, title, dates, location, bullets
+      if (headingLower.includes('experience') || headingLower.includes('work')) {
+        // Create object with explicit property order
+        const ordered = Object.create(null);
+
+        // Add properties in exact order
+        if (entry.company) ordered.company = entry.company;
+        if (entry.title || entry.role) ordered.title = entry.title || entry.role;
+        if (entry.dates || entry.date) ordered.dates = entry.dates || entry.date;
+        if (entry.location) ordered.location = entry.location;
+        if (entry.bullets || entry.description) {
+          ordered.bullets = Array.isArray(entry.bullets) ? entry.bullets :
+            (entry.description ? [entry.description] : []);
+        }
+
+        // Copy any remaining fields
+        Object.keys(entry).forEach(key => {
+          if (!(key in ordered)) {
+            ordered[key] = entry[key];
+          }
+        });
+
+        console.log(`[normalizeFieldOrder] Experience entry keys: ${Object.keys(ordered).join(', ')}`);
+        return ordered;
+      }
+
+      // For Education entries: institution, degree, dates, location, gpa, bullets
+      if (headingLower.includes('education') || headingLower.includes('academic')) {
+        const ordered = Object.create(null);
+
+        if (entry.institution || entry.school || entry.university) {
+          ordered.institution = entry.institution || entry.school || entry.university;
+        }
+        if (entry.degree || entry.major) ordered.degree = entry.degree || entry.major;
+        if (entry.dates || entry.graduationDate) ordered.dates = entry.dates || entry.graduationDate;
+        if (entry.location) ordered.location = entry.location;
+        if (entry.gpa) ordered.gpa = entry.gpa;
+        if (entry.bullets) ordered.bullets = entry.bullets;
+
+        // Copy any remaining fields
+        Object.keys(entry).forEach(key => {
+          if (!(key in ordered)) {
+            ordered[key] = entry[key];
+          }
+        });
+
+        console.log(`[normalizeFieldOrder] Education entry keys: ${Object.keys(ordered).join(', ')}`);
+        return ordered;
+      }
+
+      // For other sections, return as-is
+      return entry;
+    });
+  }
+
+  // Handle object-based structures with entries
+  if (rawBody.entries && Array.isArray(rawBody.entries)) {
+    return {
+      ...rawBody,
+      entries: normalizeFieldOrder(rawBody.entries, heading),
+    };
+  }
+
+  return rawBody;
 }
 
 function extractSectionsFromCandidateText(text: string): ResumeSection[] | null {
@@ -265,7 +350,7 @@ export async function parseResumeWithLLM({ fileBase64 }: ParseArgs): Promise<Res
   // Auto-detect provider based on URL or API key format
   const provider = detectLLMProvider(apiUrl, apiKey);
   const headers = buildLLMHeaders(provider, apiKey);
-  
+
   const prompt = `${parsingInstructions}\n\nParse the attached resume into structured sections. Return JSON with "sections", each having "heading" and "body".${formattingReminder}`;
   const body = buildLLMRequestBody(provider, { apiUrl, apiKey, model }, {
     prompt,
@@ -299,14 +384,14 @@ export async function parseResumeWithLLM({ fileBase64 }: ParseArgs): Promise<Res
 
   // Extract text content using provider-specific parsing
   const textContent = parseLLMResponse(provider, json);
-  
+
   if (textContent) {
     const sections = extractSectionsFromCandidateText(textContent);
     if (sections && sections.length > 0) {
       return sections;
     }
   }
-  
+
   // Fallback: try parsing the whole response (for Google format)
   const sections = extractSectionsFromResponse(json);
   if (sections && sections.length > 0) {
@@ -359,7 +444,7 @@ export async function extractContactSectionWithLLM({ fileBase64 }: ParseArgs): P
 
   // Extract text content using provider-specific parsing
   const textContent = parseLLMResponse(provider, json);
-  
+
   if (textContent) {
     const sections = extractSectionsFromCandidateText(textContent);
     if (sections && sections.length > 0) {
@@ -522,14 +607,14 @@ Sections JSON:\n${JSON.stringify(sections, null, 2)}`;
     // Extract text content using provider-specific parsing
     const parsedResponse = json || JSON.parse(raw);
     const textContent = parseLLMResponse(provider, parsedResponse);
-    
+
     if (textContent) {
       const extracted = extractFormattedSectionsFromCandidateText(textContent);
       if (extracted?.sections && Array.isArray(extracted.sections)) {
         json = extracted;
       }
     }
-    
+
     // Fallback: try parsing Google Gemini format directly
     if (!json?.sections) {
       try {
@@ -575,13 +660,13 @@ Sections JSON:\n${JSON.stringify(sections, null, 2)}`;
         : [],
       entries: Array.isArray(section.entries)
         ? section.entries.map((entry) => ({
-            primary: entry.primary ?? undefined,
-            secondary: entry.secondary ?? undefined,
-            meta: entry.meta ?? undefined,
-            bullets: Array.isArray(entry.bullets)
-              ? entry.bullets.map((bullet) => (bullet ?? '').trim()).filter(Boolean)
-              : [],
-          }))
+          primary: entry.primary ?? undefined,
+          secondary: entry.secondary ?? undefined,
+          meta: entry.meta ?? undefined,
+          bullets: Array.isArray(entry.bullets)
+            ? entry.bullets.map((bullet) => (bullet ?? '').trim()).filter(Boolean)
+            : [],
+        }))
         : [],
     }))
     .filter(

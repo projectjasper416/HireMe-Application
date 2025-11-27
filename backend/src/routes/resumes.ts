@@ -2,10 +2,14 @@ import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth';
 import { supabaseAdmin } from '../config/supabase';
+import { updateRawBodyWithText } from '../services/rawBodyUpdater';
+import { rawBodyToText } from '../services/rawBodyToText';
+import { renderResumePdf } from '../services/exportResume';
 import { extractContactSectionWithLLM, parseResumeWithLLM } from '../services/llmParser';
 import { reviewSectionWithLLM } from '../services/reviewLLM';
-import { tailorSectionWithLLM } from '../services/tailorLLM';
-import { renderResumePdf } from '../services/exportResume';
+import { reviewSectionStructured } from '../services/structuredReviewLLM';
+import { regenerateBulletWithLLM } from '../services/regenerateBulletLLM';
+import { tailorSectionWithLLM, tailorSectionStructured } from '../services/tailorLLM';
 import type { ResumeReview, ResumeSection } from '../types/resume';
 
 function sanitizeUnicode(str: string): string {
@@ -196,7 +200,13 @@ resumeRouter.get('/:resumeId/sections', async (req: AuthenticatedRequest, res) =
     const review = reviewsBySection[section.heading];
     // If there is a final_updated version AND we are not requesting original, use that as the body
     const useOriginal = req.query.original === 'true';
-    const body = (!useOriginal && review?.final_updated) ? review.final_updated : section.body;
+
+    // Convert final_updated from JSONB to text for frontend
+    let body = section.body;
+    if (!useOriginal && review?.final_updated) {
+      body = rawBodyToText(review.final_updated);
+    }
+
     return {
       ...section,
       body,
@@ -275,32 +285,27 @@ resumeRouter.post('/:resumeId/export', async (req: AuthenticatedRequest, res) =>
   if (!jobId) {
     const { data: reviewData } = await supabaseAdmin
       .from('resume_ai_reviews')
-      .select('section_name, final_updated, ai_suggestions_html, raw_data')
+      .select('section_name, final_updated, ai_suggestions_html')
       .eq('resume_id', resumeId);
 
     if (reviewData) {
-      const updates = reviewData.reduce((acc: Record<string, { body: string; raw_body?: any }>, review: any) => {
-        // Use final_updated if available, otherwise ai_suggestions_html
-        const content = review.final_updated || review.ai_suggestions_html;
-        if (content) {
-          acc[review.section_name] = {
-            body: content,
-            // Only use saved raw_body if we're using ai_suggestions (not final_updated)
-            // This ensures user edits are visible in PDF
-            raw_body: review.final_updated ? undefined : (review.raw_data ? JSON.parse(review.raw_data) : undefined),
-          };
-        }
-        return acc;
-      }, {} as Record<string, { body: string; raw_body?: any }>);
-
       sections = sections.map((section) => {
-        const update = updates[section.heading];
-        if (update) {
-          return {
-            ...section,
-            body: update.body,
-            raw_body: update.raw_body,
-          };
+        const review = reviewData.find(r => r.section_name === section.heading);
+        if (review) {
+          // If final_updated exists (user saved changes), use it as raw_body for structure
+          if (review.final_updated) {
+            return {
+              ...section,
+              raw_body: review.final_updated,  // Use structured data for perfect formatting!
+            };
+          }
+          // Otherwise use ai_suggestions_html as body text
+          if (review.ai_suggestions_html) {
+            return {
+              ...section,
+              body: review.ai_suggestions_html,
+            };
+          }
         }
         return section;
       });
@@ -310,7 +315,7 @@ resumeRouter.post('/:resumeId/export', async (req: AuthenticatedRequest, res) =>
   else {
     const { data: tailorings, error: tailorError } = await supabaseAdmin
       .from('resume_ai_tailorings')
-      .select('section_name, tailored_html, final_updated')
+      .select('section_name, final_updated')
       .eq('resume_id', resumeId)
       .eq('job_id', jobId);
 
@@ -318,16 +323,15 @@ resumeRouter.post('/:resumeId/export', async (req: AuthenticatedRequest, res) =>
       sections = sections.map((section) => {
         const match = tailorings.find((t) => t.section_name === section.heading);
         if (match) {
-          // Use final_updated if available, otherwise tailored_html
-          const content = match.final_updated || match.tailored_html;
-          if (content) {
+          // Handle structured tailoring (final_updated is JSONB)
+          if (match.final_updated) {
+            // Use final_updated as raw_body for structured rendering
             return {
               ...section,
-              body: acceptTailoringChanges(content),
-              // Clear raw_body when using tailored content
-              raw_body: undefined,
+              raw_body: match.final_updated,
             };
           }
+
         }
         return section;
       });
@@ -371,14 +375,17 @@ resumeRouter.post('/:resumeId/review', async (req: AuthenticatedRequest, res) =>
 
   for (const section of sections) {
     try {
-      const review = await reviewSectionWithLLM({
+      // Always use structured review
+      const structuredReview = await reviewSectionStructured({
         sectionName: section.heading,
-        content: section.body,
+        rawBody: section.raw_body || { summary: [section.body] },
       });
+
+      // Store structured review as JSON string in ai_suggestions_html
       results.push({
-        section_name: section.heading, // Enforce original section name
-        ai_suggestions_html: review.review_html,
-        raw_data: section.body,
+        section_name: section.heading,
+        ai_suggestions_html: JSON.stringify(structuredReview),
+        raw_data: JSON.stringify(section.raw_body || { summary: [section.body] }),
         created_at: new Date().toISOString(),
       });
     } catch (err) {
@@ -480,11 +487,10 @@ resumeRouter.post('/:resumeId/tailor', async (req: AuthenticatedRequest, res) =>
 
   for (const section of sections) {
     try {
-      // Skip contact info for tailoring usually, but let's keep it consistent or skip if needed.
-      // The prompt handles it (instructions say "For contact information, only normalize...").
-      const tailorResult = await tailorSectionWithLLM({
+      // Call structured tailoring LLM
+      const structuredResult = await tailorSectionStructured({
         sectionName: section.heading,
-        content: section.body,
+        rawBody: section.raw_body || { summary: [section.body] },
         jobDescription: targetJD,
         keywords: targetKeywords || [],
       });
@@ -492,15 +498,14 @@ resumeRouter.post('/:resumeId/tailor', async (req: AuthenticatedRequest, res) =>
       results.push({
         resume_id: resumeId,
         job_id: jobId || null,
-        section_name: section.heading, // Enforce original section name
-        tailored_html: tailorResult.tailored_html,
-        original_text: section.body,
+        section_name: section.heading,
+
         final_updated: null,
+        tailored_suggestions: JSON.stringify(structuredResult), // Stringify for text column
       });
     } catch (err) {
       console.error(`Error tailoring section ${section.heading}:`, err);
-      // Continue with other sections or fail? Let's continue and return what we have, or fail partially.
-      // For now, let's just log and continue.
+      // Continue with other sections
     }
   }
 
@@ -615,9 +620,8 @@ resumeRouter.put('/:resumeId/tailorings', async (req: AuthenticatedRequest, res)
         resume_id: resumeId,
         job_id: jobId,
         section_name: sectionName,
-        tailored_html: sanitizeUnicode(tailoredHtml),
+
         final_updated: sanitizeUnicode(tailoredHtml),
-        original_text: sanitizeUnicode(originalText),
       })
       .select()
       .single();
@@ -630,6 +634,108 @@ resumeRouter.put('/:resumeId/tailorings', async (req: AuthenticatedRequest, res)
   }
 
   return res.json({ tailoring: data });
+});
+
+// POST /:resumeId/tailorings/:jobId/sections/:sectionIndex/regenerate-bullet
+// Regenerate a single bullet for tailoring
+resumeRouter.post('/:resumeId/tailorings/:jobId/sections/:sectionIndex/regenerate-bullet', async (req: AuthenticatedRequest, res) => {
+  const { resumeId, jobId, sectionIndex } = req.params;
+  const { bulletId, bulletText, context } = req.body as {
+    bulletId: string;
+    bulletText: string;
+    context: {
+      sectionName: string;
+      jobDescription: string;
+      keywords?: string[];
+      company?: string;
+      title?: string;
+      dates?: string;
+      otherBullets?: string[];
+    };
+  };
+
+  if (!bulletText || !context) {
+    return res.status(400).json({ error: 'Missing bulletText or context' });
+  }
+
+  try {
+    const result = await regenerateBulletWithLLM({
+      bulletText,
+      context,
+    });
+
+    return res.json({
+      bulletId,
+      suggested: result.suggested,
+    });
+  } catch (err) {
+    return res.status(502).json({
+      error: 'Failed to regenerate bullet',
+      detail: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
+// POST /:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured
+// Save structured edits for tailoring (auto-save)
+resumeRouter.post('/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured', async (req: AuthenticatedRequest, res) => {
+  const { resumeId, jobId, sectionIndex } = req.params;
+  const { finalUpdated } = req.body as { finalUpdated: any };
+
+  const { data, error } = await supabaseAdmin
+    .from('resumes')
+    .select('sections')
+    .eq('id', resumeId)
+    .eq('user_id', req.user!.id)
+    .maybeSingle();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Resume not found' });
+  }
+
+  const sections = data.sections as ResumeSection[];
+  const idx = parseInt(sectionIndex, 10);
+
+  if (idx < 0 || idx >= sections.length) {
+    return res.status(400).json({ error: 'Invalid section index' });
+  }
+
+  const sectionHeading = sections[idx].heading;
+
+  // Upsert the final_updated in resume_ai_tailorings
+  const { data: existingTailoring } = await supabaseAdmin
+    .from('resume_ai_tailorings')
+    .select('*')
+    .eq('resume_id', resumeId)
+    .eq('job_id', jobId)
+    .eq('section_name', sectionHeading)
+    .maybeSingle();
+
+  if (existingTailoring) {
+    const { error: updateError } = await supabaseAdmin
+      .from('resume_ai_tailorings')
+      .update({ final_updated: finalUpdated })
+      .eq('resume_id', resumeId)
+      .eq('job_id', jobId)
+      .eq('section_name', sectionHeading);
+
+    if (updateError) return res.status(400).json({ error: updateError.message });
+  } else {
+    const { error: insertError } = await supabaseAdmin
+      .from('resume_ai_tailorings')
+      .insert({
+        resume_id: resumeId,
+        job_id: jobId,
+        section_name: sectionHeading,
+        final_updated: finalUpdated,
+
+        tailored_suggestions: null,
+      });
+
+    if (insertError) return res.status(400).json({ error: insertError.message });
+  }
+
+  return res.json({ success: true });
 });
 
 resumeRouter.put('/:resumeId/sections/:index', async (req: AuthenticatedRequest, res) => {
@@ -671,6 +777,12 @@ resumeRouter.put('/:resumeId/sections/:index', async (req: AuthenticatedRequest,
 
   const sectionHeading = sections[sectionIndex].heading;
 
+  // Get the original raw_body structure
+  const originalRawBody = sections[sectionIndex].raw_body;
+
+  // Update the raw_body structure with the new text content
+  const updatedRawBody = updateRawBodyWithText(originalRawBody, content);
+
   // Check if review exists
   const { data: existingReview } = await supabaseAdmin
     .from('resume_ai_reviews')
@@ -683,8 +795,7 @@ resumeRouter.put('/:resumeId/sections/:index', async (req: AuthenticatedRequest,
     const { error: updateError } = await supabaseAdmin
       .from('resume_ai_reviews')
       .update({
-        final_updated: sanitizeUnicode(content),
-        raw_data: rawBody !== undefined ? JSON.stringify(sanitizeValue(rawBody)) : existingReview.raw_data,
+        final_updated: updatedRawBody,  // Store structured data as JSONB
       })
       .eq('resume_id', resumeId)
       .eq('section_name', sectionHeading);
@@ -696,15 +807,112 @@ resumeRouter.put('/:resumeId/sections/:index', async (req: AuthenticatedRequest,
       .insert({
         resume_id: resumeId,
         section_name: sectionHeading,
-        final_updated: sanitizeUnicode(content),
-        raw_data: rawBody !== undefined ? JSON.stringify(sanitizeValue(rawBody)) : sections[sectionIndex].body,
-        ai_suggestions_html: '', // No AI suggestions yet
+        final_updated: updatedRawBody,  // Store structured data as JSONB
+        raw_data: JSON.stringify(originalRawBody),  // Keep original for reference
+        ai_suggestions_html: '',
       });
 
     if (insertError) return res.status(400).json({ error: insertError.message });
   }
 
   return res.json({ section: sections[sectionIndex] });
+});
+
+// POST /:resumeId/sections/:sectionIndex/save-structured
+// Save structured edits (auto-save)
+resumeRouter.post('/:resumeId/sections/:sectionIndex/save-structured', async (req: AuthenticatedRequest, res) => {
+  const { resumeId, sectionIndex } = req.params;
+  const { finalUpdated } = req.body as { finalUpdated: any };
+
+  const { data, error } = await supabaseAdmin
+    .from('resumes')
+    .select('sections')
+    .eq('id', resumeId)
+    .eq('user_id', req.user!.id)
+    .maybeSingle();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Resume not found' });
+  }
+
+  const sections = data.sections as ResumeSection[];
+  const idx = parseInt(sectionIndex, 10);
+
+  if (idx < 0 || idx >= sections.length) {
+    return res.status(400).json({ error: 'Invalid section index' });
+  }
+
+  const sectionHeading = sections[idx].heading;
+
+  // Upsert the final_updated in resume_ai_reviews
+  const { data: existingReview } = await supabaseAdmin
+    .from('resume_ai_reviews')
+    .select('*')
+    .eq('resume_id', resumeId)
+    .eq('section_name', sectionHeading)
+    .maybeSingle();
+
+  if (existingReview) {
+    const { error: updateError } = await supabaseAdmin
+      .from('resume_ai_reviews')
+      .update({ final_updated: finalUpdated })
+      .eq('resume_id', resumeId)
+      .eq('section_name', sectionHeading);
+
+    if (updateError) return res.status(400).json({ error: updateError.message });
+  } else {
+    const { error: insertError } = await supabaseAdmin
+      .from('resume_ai_reviews')
+      .insert({
+        resume_id: resumeId,
+        section_name: sectionHeading,
+        final_updated: finalUpdated,
+        ai_suggestions_html: '',
+        tailored_suggestions: null,
+      });
+
+    if (insertError) return res.status(400).json({ error: insertError.message });
+  }
+
+  return res.json({ success: true });
+});
+
+// POST /:resumeId/sections/:sectionIndex/regenerate-bullet
+// Regenerate a single bullet point
+resumeRouter.post('/:resumeId/sections/:sectionIndex/regenerate-bullet', async (req: AuthenticatedRequest, res) => {
+  const { resumeId, sectionIndex } = req.params;
+  const { bulletId, bulletText, context } = req.body as {
+    bulletId: string;
+    bulletText: string;
+    context: {
+      sectionName: string;
+      company?: string;
+      title?: string;
+      dates?: string;
+      otherBullets?: string[];
+    };
+  };
+
+  if (!bulletText || !context) {
+    return res.status(400).json({ error: 'Missing bulletText or context' });
+  }
+
+  try {
+    const result = await regenerateBulletWithLLM({
+      bulletText,
+      context,
+    });
+
+    return res.json({
+      bulletId,
+      suggested: result.suggested,
+    });
+  } catch (err) {
+    return res.status(502).json({
+      error: 'Failed to regenerate bullet',
+      detail: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
 });
 
 // List resumes

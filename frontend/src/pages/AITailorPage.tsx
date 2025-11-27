@@ -2,6 +2,20 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import DOMPurify, { Config as DOMPurifyConfig } from 'dompurify';
 import { AddJobModal } from '../components/AddJobModal';
+import StructuredSectionRenderer from '../components/StructuredSectionRenderer';
+import {
+    parseAITailoring,
+    StructuredTailoringState,
+    acceptBullet,
+    rejectBullet,
+    updateBullet,
+    updateBulletSuggestion,
+    acceptField,
+    rejectField,
+    updateField,
+    serializeToFinalUpdated,
+    applyFinalUpdated,
+} from '../utils/structuredTailoringUtils';
 
 interface Job {
     id: string;
@@ -13,20 +27,22 @@ interface Job {
 
 interface TailoringResult {
     section_name: string;
-    tailored_html: string;
+
     original_text: string;
     job_id?: string;
     final_updated?: string | null;
+    tailored_suggestions?: any;
 }
 
 interface SectionState {
     heading: string;
     body: string;
     raw_body?: unknown;
-    tailoredHtml: string | null;
+
     editedHtml: string;
     saving: boolean;
     regenerating: boolean;
+    structuredTailoring: StructuredTailoringState | null;
 }
 
 import { ResumeExportSidebar } from '../components/ResumeExportSidebar';
@@ -134,10 +150,11 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                         heading: s.heading,
                         body: s.body,
                         raw_body: s.raw_body,
-                        tailoredHtml: null,
+
                         editedHtml: convertPlainTextToHtml(s.body),
                         saving: false,
                         regenerating: false,
+                        structuredTailoring: null,
                     }));
                     setSections(initialSections);
                     sectionRefs.current = initialSections.map(() => null);
@@ -180,20 +197,40 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                         prev.map((section) => {
                             const match = tailorings.find((t) => t.section_name === section.heading);
                             if (match) {
+                                // Parse structured tailoring (tailored_suggestions is now stored as text)
+                                let structuredTailoring = null;
+                                if (match.tailored_suggestions) {
+                                    try {
+                                        // Parse the JSON string once, then pass directly to parseAITailoring
+                                        // This preserves fieldOrder and avoids double stringify/parse
+                                        const rawDataObj = typeof match.tailored_suggestions === 'string'
+                                            ? JSON.parse(match.tailored_suggestions)
+                                            : match.tailored_suggestions;
+                                        // Pass the object directly - parseAITailoring now handles both string and object
+                                        structuredTailoring = parseAITailoring(rawDataObj);
+                                    } catch (e) {
+                                        console.error('Failed to parse tailored_suggestions:', e);
+                                    }
+                                }
+
+                                // Apply saved final_updated values if they exist
+                                if (structuredTailoring && match.final_updated) {
+                                    structuredTailoring = applyFinalUpdated(structuredTailoring, match.final_updated);
+                                }
+
                                 return {
                                     ...section,
-                                    tailoredHtml: sanitizeHtml(match.tailored_html),
-                                    editedHtml: sanitizeHtml(match.final_updated || match.tailored_html),
-                                    section_name: section.heading, // Enforce original heading
+
+                                    editedHtml: sanitizeHtml(match.final_updated || ''),
+                                    structuredTailoring,
                                 };
                             }
                             // Reset to original if no tailoring found for this job
                             return {
                                 ...section,
-                                section_name: section.heading, // Enforce original heading
-                                tailoredHtml: null,
+
                                 editedHtml: convertPlainTextToHtml(section.body),
-                                original_text: section.body,
+                                structuredTailoring: null,
                             };
                         })
                     );
@@ -228,10 +265,26 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                 prev.map((section) => {
                     const match = results.find((t) => t.section_name === section.heading);
                     if (match) {
+                        // Parse structured tailoring from tailored_suggestions (stored as text)
+                        let structuredTailoring = null;
+                        if (match.tailored_suggestions) {
+                            try {
+                                // Parse the JSON string once, then pass directly to parseAITailoring
+                                const rawDataObj = typeof match.tailored_suggestions === 'string'
+                                    ? JSON.parse(match.tailored_suggestions)
+                                    : match.tailored_suggestions;
+                                // Pass the object directly - parseAITailoring now handles both string and object
+                                structuredTailoring = parseAITailoring(rawDataObj);
+                            } catch (e) {
+                                console.error('Failed to parse tailored_suggestions:', e);
+                            }
+                        }
+
                         return {
                             ...section,
-                            tailoredHtml: sanitizeHtml(match.tailored_html),
-                            editedHtml: sanitizeHtml(match.tailored_html),
+
+                            editedHtml: sanitizeHtml(match.final_updated || ''),
+                            structuredTailoring,
                         };
                     }
                     return section;
@@ -241,6 +294,182 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
             setError(err.message);
         } finally {
             setTailoring(false);
+        }
+    }
+
+    // Structured tailoring handlers
+    async function handleRegenerateBullet(sectionIndex: number, bulletId: string, context: any) {
+        if (!resumeId || !selectedJobId) return;
+
+        try {
+            const res = await fetch(
+                `${apiBaseUrl}/resumes/${resumeId}/tailorings/${selectedJobId}/sections/${sectionIndex}/regenerate-bullet`,
+                {
+                    method: 'POST',
+                    headers: authHeaders,
+                    body: JSON.stringify({ bulletId, bulletText: context.bulletText || '', context }),
+                }
+            );
+
+            if (!res.ok) {
+                throw new Error('Failed to regenerate bullet');
+            }
+
+            const json = await res.json();
+
+            // Update the section with new suggestion
+            setSections((prev) =>
+                prev.map((section, idx) => {
+                    if (idx !== sectionIndex || !section.structuredTailoring) return section;
+                    return {
+                        ...section,
+                        structuredTailoring: updateBulletSuggestion(
+                            section.structuredTailoring,
+                            bulletId,
+                            json.suggested
+                        ),
+                    };
+                })
+            );
+        } catch (err: any) {
+            setError(err.message);
+        }
+    }
+
+    function handleUpdateBullet(sectionIndex: number, bulletId: string, newText: string) {
+        setSections((prev) => {
+            const updated = prev.map((section, idx) => {
+                if (idx !== sectionIndex || !section.structuredTailoring) return section;
+                const updatedTailoring = updateBullet(section.structuredTailoring, bulletId, newText);
+                return {
+                    ...section,
+                    structuredTailoring: updatedTailoring,
+                };
+            });
+
+            const updatedSection = updated[sectionIndex];
+            if (updatedSection?.structuredTailoring) {
+                saveStructuredChangesWithData(sectionIndex, updatedSection.structuredTailoring);
+            }
+
+            return updated;
+        });
+    }
+
+    function handleAcceptBullet(sectionIndex: number, bulletId: string) {
+        setSections((prev) => {
+            const updated = prev.map((section, idx) => {
+                if (idx !== sectionIndex || !section.structuredTailoring) return section;
+                const updatedTailoring = acceptBullet(section.structuredTailoring, bulletId);
+                return {
+                    ...section,
+                    structuredTailoring: updatedTailoring,
+                };
+            });
+
+            const updatedSection = updated[sectionIndex];
+            if (updatedSection?.structuredTailoring) {
+                saveStructuredChangesWithData(sectionIndex, updatedSection.structuredTailoring);
+            }
+
+            return updated;
+        });
+    }
+
+    function handleRejectBullet(sectionIndex: number, bulletId: string) {
+        setSections((prev) => {
+            const updated = prev.map((section, idx) => {
+                if (idx !== sectionIndex || !section.structuredTailoring) return section;
+                const updatedTailoring = rejectBullet(section.structuredTailoring, bulletId);
+                return {
+                    ...section,
+                    structuredTailoring: updatedTailoring,
+                };
+            });
+
+            const updatedSection = updated[sectionIndex];
+            if (updatedSection?.structuredTailoring) {
+                saveStructuredChangesWithData(sectionIndex, updatedSection.structuredTailoring);
+            }
+
+            return updated;
+        });
+    }
+
+    function handleUpdateField(sectionIndex: number, entryId: string, fieldName: string, newText: string) {
+        setSections((prev) => {
+            const updated = prev.map((section, idx) => {
+                if (idx !== sectionIndex || !section.structuredTailoring) return section;
+                const updatedTailoring = updateField(section.structuredTailoring, entryId, fieldName, newText);
+                return {
+                    ...section,
+                    structuredTailoring: updatedTailoring,
+                };
+            });
+
+            const updatedSection = updated[sectionIndex];
+            if (updatedSection?.structuredTailoring) {
+                saveStructuredChangesWithData(sectionIndex, updatedSection.structuredTailoring);
+            }
+
+            return updated;
+        });
+    }
+
+    function handleAcceptField(sectionIndex: number, entryId: string, fieldName: string) {
+        setSections((prev) => {
+            const updated = prev.map((section, idx) => {
+                if (idx !== sectionIndex || !section.structuredTailoring) return section;
+                const updatedTailoring = acceptField(section.structuredTailoring, entryId, fieldName);
+                return {
+                    ...section,
+                    structuredTailoring: updatedTailoring,
+                };
+            });
+
+            const updatedSection = updated[sectionIndex];
+            if (updatedSection?.structuredTailoring) {
+                saveStructuredChangesWithData(sectionIndex, updatedSection.structuredTailoring);
+            }
+
+            return updated;
+        });
+    }
+
+    function handleRejectField(sectionIndex: number, entryId: string, fieldName: string) {
+        setSections((prev) => {
+            const updated = prev.map((section, idx) => {
+                if (idx !== sectionIndex || !section.structuredTailoring) return section;
+                const updatedTailoring = rejectField(section.structuredTailoring, entryId, fieldName);
+                return {
+                    ...section,
+                    structuredTailoring: updatedTailoring,
+                };
+            });
+
+            const updatedSection = updated[sectionIndex];
+            if (updatedSection?.structuredTailoring) {
+                saveStructuredChangesWithData(sectionIndex, updatedSection.structuredTailoring);
+            }
+
+            return updated;
+        });
+    }
+
+    // Auto-save structured changes to database
+    async function saveStructuredChangesWithData(sectionIndex: number, structuredTailoring: StructuredTailoringState) {
+        if (!resumeId || !selectedJobId) return;
+
+        try {
+            const finalUpdated = serializeToFinalUpdated(structuredTailoring);
+
+            await fetch(`${apiBaseUrl}/resumes/${resumeId}/tailorings/${selectedJobId}/sections/${sectionIndex}/save-structured`, {
+                method: 'POST',
+                headers: authHeaders,
+                body: JSON.stringify({ finalUpdated }),
+            });
+        } catch (err) {
+            console.error('Failed to auto-save:', err);
         }
     }
 
@@ -278,8 +507,8 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                         idx === index
                             ? {
                                 ...item,
-                                tailoredHtml: sanitizeHtml(match.tailored_html),
-                                editedHtml: sanitizeHtml(match.tailored_html),
+
+                                editedHtml: sanitizeHtml(match.final_updated || ''),
                                 regenerating: false,
                             }
                             : item
@@ -316,7 +545,7 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                     body: JSON.stringify({
                         jobId: selectedJobId,
                         sectionName: section.heading,
-                        tailoredHtml: currentHtml,
+
                         originalText: section.body,
                     }),
                 });
@@ -332,8 +561,8 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                         idx === index
                             ? {
                                 ...item,
-                                tailoredHtml: sanitizeHtml(json.tailoring.tailored_html),
-                                editedHtml: sanitizeHtml(json.tailoring.final_updated || json.tailoring.tailored_html),
+
+                                editedHtml: sanitizeHtml(json.tailoring.final_updated || ''),
                                 saving: false,
                             }
                             : item
@@ -361,7 +590,7 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                                 body: json.section.body,
                                 raw_body: json.section.raw_body,
                                 editedHtml: convertPlainTextToHtml(json.section.body),
-                                tailoredHtml: null,
+
                                 saving: false,
                             }
                             : item
@@ -509,7 +738,7 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                                         <header className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                                             <div>
                                                 <h3 className="text-xl font-semibold text-gray-900">{section.heading}</h3>
-                                                {!section.tailoredHtml && (
+                                                {!section.structuredTailoring && (
                                                     <p className="mt-1 text-sm text-gray-500">
                                                         Select a job and click "Tailor Resume" to see suggestions.
                                                     </p>
@@ -518,7 +747,7 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                                             <div className="flex gap-2">
                                                 <button
                                                     onClick={() => handleAccept(index)}
-                                                    disabled={!section.tailoredHtml}
+                                                    disabled={!section.structuredTailoring}
                                                     className="flex items-center gap-1 rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 transition-all hover:bg-green-100 disabled:cursor-not-allowed disabled:opacity-60"
                                                     title="Accept All Changes"
                                                 >
@@ -526,7 +755,7 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                                                 </button>
                                                 <button
                                                     onClick={() => handleReject(index)}
-                                                    disabled={!section.tailoredHtml}
+                                                    disabled={!section.structuredTailoring}
                                                     className="flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 transition-all hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
                                                     title="Reject All Changes"
                                                 >
@@ -543,33 +772,22 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                                         </header>
 
                                         <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
-                                            <div className="mb-2 flex justify-end">
-                                                {section.tailoredHtml && (
-                                                    <button
-                                                        onClick={() => regenerateSection(index)}
-                                                        disabled={section.regenerating}
-                                                        className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 hover:underline disabled:opacity-50"
-                                                    >
-                                                        <span className="text-lg">↻</span> {section.regenerating ? 'Regenerating...' : 'Regenerate with AI'}
-                                                    </button>
-                                                )}
-                                            </div>
-                                            <div
-                                                className="min-h-[12rem] rounded-xl bg-gray-50 px-4 py-3 text-sm leading-relaxed text-gray-900 focus-within:ring-2 focus-within:ring-indigo-200"
-                                                contentEditable
-                                                suppressContentEditableWarning
-                                                onInput={(e) => updateEditedHtml(index, e.currentTarget.innerHTML)}
-                                                ref={(el) => {
-                                                    sectionRefs.current[index] = el;
-                                                    if (el && el.innerHTML !== section.editedHtml) {
-                                                        el.innerHTML = section.editedHtml;
-                                                    }
-                                                }}
-                                            />
-                                            <p className="mt-2 text-xs text-gray-500">
-                                                <span className="text-red-600 line-through">Red strike-through</span> = removal,{' '}
-                                                <span className="text-green-600 underline">Green underline</span> = addition.
-                                            </p>
+                                            {section.structuredTailoring ? (
+                                                <StructuredSectionRenderer
+                                                    section={section.structuredTailoring}
+                                                    onUpdateBullet={(bulletId, newText) => handleUpdateBullet(index, bulletId, newText)}
+                                                    onAcceptBullet={(bulletId) => handleAcceptBullet(index, bulletId)}
+                                                    onRejectBullet={(bulletId) => handleRejectBullet(index, bulletId)}
+                                                    onRegenerateBullet={(bulletId, context) => handleRegenerateBullet(index, bulletId, context)}
+                                                    onUpdateField={(entryId, fieldName, newText) => handleUpdateField(index, entryId, fieldName, newText)}
+                                                    onAcceptField={(entryId, fieldName) => handleAcceptField(index, entryId, fieldName)}
+                                                    onRejectField={(entryId, fieldName) => handleRejectField(index, entryId, fieldName)}
+                                                />
+                                            ) : (
+                                                <div className="text-center py-8 text-gray-500">
+                                                    <p>Select a job and click "Tailor Resume" to see AI suggestions.</p>
+                                                </div>
+                                            )}
                                         </div>
                                     </section>
                                 ))}
