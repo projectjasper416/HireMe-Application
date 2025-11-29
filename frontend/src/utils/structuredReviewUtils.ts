@@ -25,6 +25,7 @@ export interface EntryState {
     id: string;
     metadata: Record<string, { original: string; suggested: string | null; final: string | null }>;
     bullets: BulletState[];
+    fieldOrder?: string[]; // Preserve field order from backend
 }
 
 export interface StructuredSectionState {
@@ -56,9 +57,26 @@ export function parseAISuggestions(ai_suggestions_html: string | null): Structur
                         bullets: [],
                     };
 
-                    // Extract metadata fields
+                    // Extract fieldOrder if available
+                    let fieldOrder: string[] = e.fieldOrder || [];
+                    const allMetadataKeys: string[] = [];
+
+                    // Collect all metadata fields
                     for (const [key, value] of Object.entries(e)) {
-                        if (key !== 'id' && key !== 'bullets' && typeof value === 'object' && value !== null) {
+                        if (key !== 'id' && key !== 'bullets' && key !== 'fieldOrder' && typeof value === 'object' && value !== null) {
+                            allMetadataKeys.push(key);
+                        }
+                    }
+
+                    // Use fieldOrder if provided, otherwise use object key order
+                    if (fieldOrder.length === 0) {
+                        fieldOrder = allMetadataKeys;
+                    }
+
+                    // Extract metadata fields in order
+                    for (const key of fieldOrder) {
+                        const value = e[key];
+                        if (value && typeof value === 'object' && value !== null) {
                             const field = value as any;
                             entry.metadata[key] = {
                                 original: stripMarkdown(field.original || ''),
@@ -67,6 +85,24 @@ export function parseAISuggestions(ai_suggestions_html: string | null): Structur
                             };
                         }
                     }
+
+                    // Add any remaining fields
+                    for (const key of allMetadataKeys) {
+                        if (!fieldOrder.includes(key)) {
+                            const value = e[key];
+                            if (value && typeof value === 'object' && value !== null) {
+                                const field = value as any;
+                                entry.metadata[key] = {
+                                    original: stripMarkdown(field.original || ''),
+                                    suggested: field.suggested ? stripMarkdown(field.suggested) : null,
+                                    final: null,
+                                };
+                                fieldOrder.push(key);
+                            }
+                        }
+                    }
+
+                    entry.fieldOrder = fieldOrder;
 
                     // Extract bullets
                     if (e.bullets && Array.isArray(e.bullets)) {
@@ -105,15 +141,34 @@ export function applyFinalUpdated(section: StructuredSectionState, finalUpdated:
             const savedEntry = finalUpdated[idx];
             if (!savedEntry) return entry;
 
+            // Check if using new array structure format
+            const isArrayStructure = savedEntry.fields && Array.isArray(savedEntry.fields);
+            const savedFieldMap = new Map<string, any>();
+            
+            if (isArrayStructure) {
+                // New format: extract fields from array structure
+                for (const field of savedEntry.fields) {
+                    savedFieldMap.set(field.key, field.value);
+                }
+            } else {
+                // Legacy format: extract from object keys
+                for (const [key, value] of Object.entries(savedEntry)) {
+                    if (key !== 'bullets' && key !== 'fields' && key !== 'fieldOrder') {
+                        savedFieldMap.set(key, value);
+                    }
+                }
+            }
+
             // Apply saved metadata finals ONLY where they differ from original
             const updatedMetadata = { ...entry.metadata };
             for (const [key, field] of Object.entries(entry.metadata)) {
-                if (savedEntry[key] !== undefined && typeof savedEntry[key] === 'string') {
+                const savedValue = savedFieldMap.get(key);
+                if (savedValue !== undefined && typeof savedValue === 'string') {
                     // Only set final if the saved value is different from original
-                    if (savedEntry[key] !== field.original) {
+                    if (savedValue !== field.original) {
                         updatedMetadata[key] = {
                             ...field,
-                            final: savedEntry[key],
+                            final: savedValue,
                             suggested: null, // Clear suggestion only when final is applied
                         };
                     }
@@ -122,8 +177,8 @@ export function applyFinalUpdated(section: StructuredSectionState, finalUpdated:
             }
 
             // Apply saved bullet finals ONLY where they differ from original
+            const savedBullets = savedEntry.bullets;
             const updatedBullets = entry.bullets.map((bullet, bulletIdx) => {
-                const savedBullets = savedEntry.bullets;
                 if (savedBullets && savedBullets[bulletIdx] !== undefined) {
                     const savedValue = savedBullets[bulletIdx];
                     // Only set final if the saved value is different from original
@@ -139,10 +194,16 @@ export function applyFinalUpdated(section: StructuredSectionState, finalUpdated:
                 return bullet;
             });
 
+            // Preserve fieldOrder from saved entry if available
+            const fieldOrder = isArrayStructure && savedEntry.fieldOrder 
+                ? savedEntry.fieldOrder 
+                : entry.fieldOrder;
+
             return {
                 ...entry,
                 metadata: updatedMetadata,
                 bullets: updatedBullets,
+                fieldOrder,
             };
         }),
     };
@@ -150,29 +211,46 @@ export function applyFinalUpdated(section: StructuredSectionState, finalUpdated:
 
 /**
  * Serialize structured review to JSONB format for database
+ * Uses array structure to preserve field order
  */
 export function serializeToFinalUpdated(section: StructuredSectionState): any[] {
     return section.entries.map(entry => {
-        const result: any = {};
+        // Use array structure to preserve field order
+        const fieldOrder: string[] = entry.fieldOrder || [];
+        const fields: Array<{key: string, value: any}> = [];
 
-        // Serialize metadata fields - only include if final exists
-        for (const [key, field] of Object.entries(entry.metadata)) {
-            if (field.final) {
-                result[key] = field.final;
-            } else if (field.suggested) {
-                // If no final but has suggestion, use original
-                result[key] = field.original;
-            } else {
-                result[key] = field.original;
+        // Serialize metadata fields in order
+        for (const key of fieldOrder) {
+            const field = entry.metadata[key];
+            if (field) {
+                const value = field.final || field.suggested || field.original;
+                if (value !== undefined && value !== null) {
+                    fields.push({ key, value });
+                }
             }
         }
 
-        // Serialize bullets - only include final or original
-        result.bullets = entry.bullets.map(bullet =>
+        // Add any remaining fields not in fieldOrder
+        for (const [key, field] of Object.entries(entry.metadata)) {
+            if (!fieldOrder.includes(key)) {
+                const value = field.final || field.suggested || field.original;
+                if (value !== undefined && value !== null) {
+                    fields.push({ key, value });
+                    fieldOrder.push(key);
+                }
+            }
+        }
+
+        // Serialize bullets
+        const bullets = entry.bullets.map(bullet =>
             bullet.final || bullet.original
         );
 
-        return result;
+        return {
+            fieldOrder,
+            fields,
+            bullets,
+        };
     });
 }
 

@@ -186,15 +186,34 @@ export function applyFinalUpdated(section: StructuredTailoringState, finalUpdate
             const savedEntry = finalUpdated[idx];
             if (!savedEntry) return entry;
 
+            // Check if using new array structure format
+            const isArrayStructure = savedEntry.fields && Array.isArray(savedEntry.fields);
+            const savedFieldMap = new Map<string, any>();
+            
+            if (isArrayStructure) {
+                // New format: extract fields from array structure
+                for (const field of savedEntry.fields) {
+                    savedFieldMap.set(field.key, field.value);
+                }
+            } else {
+                // Legacy format: extract from object keys
+                for (const [key, value] of Object.entries(savedEntry)) {
+                    if (key !== 'bullets' && key !== 'fields' && key !== 'fieldOrder') {
+                        savedFieldMap.set(key, value);
+                    }
+                }
+            }
+
             // Apply saved metadata finals ONLY where they differ from original
             const updatedMetadata = { ...entry.metadata };
             for (const [key, field] of Object.entries(entry.metadata)) {
-                if (savedEntry[key] !== undefined && typeof savedEntry[key] === 'string') {
+                const savedValue = savedFieldMap.get(key);
+                if (savedValue !== undefined && typeof savedValue === 'string') {
                     // Only set final if the saved value is different from original
-                    if (savedEntry[key] !== field.original) {
+                    if (savedValue !== field.original) {
                         updatedMetadata[key] = {
                             ...field,
-                            final: savedEntry[key],
+                            final: savedValue,
                             suggested: null, // Clear suggestion only when final is applied
                         };
                     }
@@ -203,8 +222,8 @@ export function applyFinalUpdated(section: StructuredTailoringState, finalUpdate
             }
 
             // Apply saved bullet finals ONLY where they differ from original
+            const savedBullets = savedEntry.bullets;
             const updatedBullets = entry.bullets.map((bullet, bulletIdx) => {
-                const savedBullets = savedEntry.bullets;
                 if (savedBullets && savedBullets[bulletIdx] !== undefined) {
                     const savedValue = savedBullets[bulletIdx];
                     // Only set final if the saved value is different from original
@@ -220,10 +239,16 @@ export function applyFinalUpdated(section: StructuredTailoringState, finalUpdate
                 return bullet;
             });
 
+            // Preserve fieldOrder from saved entry if available
+            const fieldOrder = isArrayStructure && savedEntry.fieldOrder 
+                ? savedEntry.fieldOrder 
+                : entry.fieldOrder;
+
             return {
                 ...entry,
                 metadata: updatedMetadata,
                 bullets: updatedBullets,
+                fieldOrder,
             };
         }),
     };
@@ -231,28 +256,46 @@ export function applyFinalUpdated(section: StructuredTailoringState, finalUpdate
 
 /**
  * Serialize structured tailoring to JSONB format for database
+ * Uses array structure to preserve field order
  */
 export function serializeToFinalUpdated(section: StructuredTailoringState): any[] {
     return section.entries.map(entry => {
-        const result: any = {};
+        // Use array structure to preserve field order
+        const fieldOrder: string[] = entry.fieldOrder || [];
+        const fields: Array<{key: string, value: any}> = [];
 
-        // Serialize metadata fields
+        // Serialize metadata fields in order
+        for (const key of fieldOrder) {
+            const field = entry.metadata[key];
+            if (field) {
+                const value = field.final || field.suggested || field.original;
+                if (value !== undefined && value !== null) {
+                    fields.push({ key, value });
+                }
+            }
+        }
+
+        // Add any remaining fields not in fieldOrder
         for (const [key, field] of Object.entries(entry.metadata)) {
-            if (field.final) {
-                result[key] = field.final;
-            } else if (field.suggested) {
-                result[key] = field.original;
-            } else {
-                result[key] = field.original;
+            if (!fieldOrder.includes(key)) {
+                const value = field.final || field.suggested || field.original;
+                if (value !== undefined && value !== null) {
+                    fields.push({ key, value });
+                    fieldOrder.push(key);
+                }
             }
         }
 
         // Serialize bullets
-        result.bullets = entry.bullets.map(bullet =>
+        const bullets = entry.bullets.map(bullet =>
             bullet.final || bullet.original
         );
 
-        return result;
+        return {
+            fieldOrder,
+            fields,
+            bullets,
+        };
     });
 }
 

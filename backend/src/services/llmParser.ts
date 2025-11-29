@@ -31,40 +31,24 @@ Extract sections from the resume and return JSON with a "sections" array.
 
 CRITICAL: For structured sections (Experience, Education, Projects, etc.), the "body" field MUST be an array of objects, where each object represents one entry.
 
-IMPORTANT: Maintain the EXACT field order as they appear visually in the resume (top to bottom).
+CRITICAL: Maintain the EXACT field order as they appear visually in the user's uploaded resume (top to bottom, left to right). 
+DO NOT reorder fields - preserve whatever order the user has in their resume.
 
-For Experience section, each entry MUST have fields in this EXACT order which user uploaded resume have:
-{
-  "company": "Company Name",
-  "title": "Job Title",
-  "dates": "Start Date - End Date",
-  "location": "Location" (optional),
-  "bullets": ["Achievement 1", "Achievement 2", ...]
-}
+For Experience section, extract fields in the EXACT order they appear in the resume. Common fields include:
+- company, title/role, dates, location, bullets
+But preserve whatever order the user's resume uses.
 
-For Education section, each entry MUST have fields in this EXACT order which user uploaded resume have:
-{
-  "institution": "School Name",
-  "degree": "Degree Name",
-  "dates": "Start - End",
-  "location": "Location" (optional),
-  "gpa": "GPA" (optional),
-  "bullets": ["Detail 1", ...] (optional)
-}
+For Education section, extract fields in the EXACT order they appear in the resume. Common fields include:
+- institution/school/university, degree/major, dates, location, gpa
+But preserve whatever order the user's resume uses.
 
-For Projects section, each entry should have fields in this EXACT order which user uploaded resume have:
-{
-  "name": "Project Name",
-  "dates": "..." (optional),
-  "description": "..." or "bullets": [...]
-}
+For Projects section, extract fields in the EXACT order they appear. Common fields include:
+- name, dates, description/bullets
+But preserve whatever order the user's resume uses.
 
-For Certifications section, each entry should have fields in this EXACT order which user uploaded resume have:
-{
-  "name": "Certification Name",
-  "issuer": "..." (optional),
-  "date": "..." (optional)
-}
+For Certifications section, extract fields in the EXACT order they appear. Common fields include:
+- name, issuer, date
+But preserve whatever order the user's resume uses.
 
 For Summary, Skills, and other text-only sections, use a simple string or array of strings for "body".
 
@@ -184,6 +168,7 @@ function normalizeSections(sections: RawSection[] | undefined | null): ResumeSec
 
 /**
  * Normalize field order in raw_body to match visual resume layout
+ * Uses array structure to preserve field order in JSONB
  */
 function normalizeFieldOrder(rawBody: any, heading: string): any {
   if (!rawBody || typeof rawBody !== 'object') return rawBody;
@@ -195,58 +180,39 @@ function normalizeFieldOrder(rawBody: any, heading: string): any {
     return rawBody.map(entry => {
       if (typeof entry !== 'object' || entry === null) return entry;
 
-      // For Experience entries: company, title, dates, location, bullets
-      if (headingLower.includes('experience') || headingLower.includes('work')) {
-        // Create object with explicit property order
-        const ordered = Object.create(null);
+      // Convert to array structure to preserve EXACT order from LLM (which matches user's resume)
+      // Use Object.keys() which preserves insertion order in modern JavaScript
+      const fieldOrder: string[] = [];
+      const fields: Array<{key: string, value: any}> = [];
+      let bullets: any[] = [];
 
-        // Add properties in exact order
-        if (entry.company) ordered.company = entry.company;
-        if (entry.title || entry.role) ordered.title = entry.title || entry.role;
-        if (entry.dates || entry.date) ordered.dates = entry.dates || entry.date;
-        if (entry.location) ordered.location = entry.location;
-        if (entry.bullets || entry.description) {
-          ordered.bullets = Array.isArray(entry.bullets) ? entry.bullets :
-            (entry.description ? [entry.description] : []);
+      // Preserve the exact order of fields as they appear in the entry object
+      // This order comes from the LLM parsing, which should match the user's resume layout
+      for (const key of Object.keys(entry)) {
+        // Skip bullets/description - handle separately
+        if (key === 'bullets' || key === 'description') continue;
+        
+        const value = entry[key];
+        // Only include non-null, non-undefined values
+        if (value !== undefined && value !== null) {
+          fieldOrder.push(key);
+          fields.push({ key, value });
         }
-
-        // Copy any remaining fields
-        Object.keys(entry).forEach(key => {
-          if (!(key in ordered)) {
-            ordered[key] = entry[key];
-          }
-        });
-
-        console.log(`[normalizeFieldOrder] Experience entry keys: ${Object.keys(ordered).join(', ')}`);
-        return ordered;
       }
 
-      // For Education entries: institution, degree, dates, location, gpa, bullets
-      if (headingLower.includes('education') || headingLower.includes('academic')) {
-        const ordered = Object.create(null);
-
-        if (entry.institution || entry.school || entry.university) {
-          ordered.institution = entry.institution || entry.school || entry.university;
-        }
-        if (entry.degree || entry.major) ordered.degree = entry.degree || entry.major;
-        if (entry.dates || entry.graduationDate) ordered.dates = entry.dates || entry.graduationDate;
-        if (entry.location) ordered.location = entry.location;
-        if (entry.gpa) ordered.gpa = entry.gpa;
-        if (entry.bullets) ordered.bullets = entry.bullets;
-
-        // Copy any remaining fields
-        Object.keys(entry).forEach(key => {
-          if (!(key in ordered)) {
-            ordered[key] = entry[key];
-          }
-        });
-
-        console.log(`[normalizeFieldOrder] Education entry keys: ${Object.keys(ordered).join(', ')}`);
-        return ordered;
+      // Handle bullets/description (always at the end)
+      if (entry.bullets && Array.isArray(entry.bullets)) {
+        bullets = entry.bullets;
+      } else if (entry.description) {
+        bullets = Array.isArray(entry.description) ? entry.description : [entry.description];
       }
 
-      // For other sections, return as-is
-      return entry;
+      // Return array structure that preserves order from user's resume
+      return {
+        fieldOrder,
+        fields,
+        bullets,
+      };
     });
   }
 

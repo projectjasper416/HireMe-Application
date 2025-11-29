@@ -152,7 +152,7 @@ Return ONLY valid JSON in the universal format.`;
         headers,
         body: JSON.stringify(body),
     });
-console.log('[tailorSectionStructured] Response:', response);
+//console.log('[tailorSectionStructured] Response:', response);
     const raw = await response.text();
 
     if (!response.ok) {
@@ -235,9 +235,17 @@ function normalizeStructuredTailoring(
     };
 
     // Extract field order from rawBody for enforcement
+    // Handles both new array structure format and legacy format
     const getFieldOrderFromRawBody = (rawBodyEntry: any): string[] => {
         if (!rawBodyEntry || typeof rawBodyEntry !== 'object') return [];
-        return Object.keys(rawBodyEntry).filter(k => k !== 'bullets' && k !== 'summary');
+        
+        // Check if using new array structure format
+        if (rawBodyEntry.fieldOrder && Array.isArray(rawBodyEntry.fieldOrder)) {
+            return rawBodyEntry.fieldOrder.filter((k: string) => k !== 'bullets' && k !== 'summary');
+        }
+        
+        // Legacy format: extract from object keys
+        return Object.keys(rawBodyEntry).filter(k => k !== 'bullets' && k !== 'summary' && k !== 'fields' && k !== 'fieldOrder');
     };
 
     const entries: EntrySuggestion[] = [];

@@ -168,8 +168,37 @@ function parseStructuredResponse(
             bullets: [],
         };
 
+        // Get field order from rawBody if available (for new array structure)
+        let expectedFieldOrder: string[] = [];
+        if (Array.isArray(rawBody) && rawBody[i]) {
+            const rawEntry = rawBody[i];
+            if (rawEntry.fieldOrder && Array.isArray(rawEntry.fieldOrder)) {
+                expectedFieldOrder = rawEntry.fieldOrder.filter((k: string) => k !== 'bullets');
+            }
+        }
+
+        const processedFieldOrder: string[] = [];
+
         if (llmEntry.metadata) {
+            // Process fields in expected order first
+            if (expectedFieldOrder.length > 0) {
+                for (const key of expectedFieldOrder) {
+                    if (llmEntry.metadata[key]) {
+                        const fieldValue = llmEntry.metadata[key] as any;
+                        const original = extractString(fieldValue.original || fieldValue);
+                        const suggested = extractString(fieldValue.suggested || fieldValue.original || fieldValue);
+
+                        if (original && original !== 'null') {
+                            entry[key] = { original, suggested };
+                            processedFieldOrder.push(key);
+                        }
+                    }
+                }
+            }
+            
+            // Process remaining fields
             for (const [key, value] of Object.entries(llmEntry.metadata)) {
+                if (expectedFieldOrder.includes(key)) continue; // Already processed
                 const fieldValue = value as any;
                 const original = extractString(fieldValue.original || fieldValue);
                 const suggested = extractString(fieldValue.suggested || fieldValue.original || fieldValue);
@@ -177,8 +206,14 @@ function parseStructuredResponse(
                 // Only add if not null/empty
                 if (original && original !== 'null') {
                     entry[key] = { original, suggested };
+                    processedFieldOrder.push(key);
                 }
             }
+        }
+
+        // Store field order for frontend
+        if (processedFieldOrder.length > 0) {
+            entry.fieldOrder = processedFieldOrder;
         }
 
         if (llmEntry.bullets && Array.isArray(llmEntry.bullets)) {
@@ -219,20 +254,59 @@ function buildFallbackResponse(
                 bullets: [],
             };
 
-            for (const [key, value] of Object.entries(item)) {
-                if (key === 'bullets' && Array.isArray(value)) {
-                    entry.bullets = value
-                        .filter(b => b && String(b) !== 'null')
-                        .map((b, j) => ({
+            // Check if using new array structure format
+            if (item.fields && Array.isArray(item.fields) && item.fieldOrder) {
+                // Extract field order
+                const fieldOrder: string[] = [];
+                
+                // Process fields in order
+                for (const key of item.fieldOrder) {
+                    if (key === 'bullets') continue;
+                    const field = item.fields.find((f: any) => f.key === key);
+                    if (field && field.value !== undefined && field.value !== null) {
+                        const valueStr = String(field.value);
+                        if (valueStr !== 'null') {
+                            entry[key] = {
+                                original: valueStr,
+                                suggested: valueStr,
+                            };
+                            fieldOrder.push(key);
+                        }
+                    }
+                }
+                
+                // Store field order
+                if (fieldOrder.length > 0) {
+                    entry.fieldOrder = fieldOrder;
+                }
+                
+                // Handle bullets
+                if (item.bullets && Array.isArray(item.bullets)) {
+                    entry.bullets = item.bullets
+                        .filter((b: any) => b && String(b) !== 'null')
+                        .map((b: any, j: number) => ({
                             id: `bullet-${i}-${j}`,
                             original: String(b),
                             suggested: String(b),
                         }));
-                } else if (value && String(value) !== 'null') {
-                    entry[key] = {
-                        original: String(value),
-                        suggested: String(value),
-                    };
+                }
+            } else {
+                // Legacy format
+                for (const [key, value] of Object.entries(item)) {
+                    if (key === 'bullets' && Array.isArray(value)) {
+                        entry.bullets = value
+                            .filter(b => b && String(b) !== 'null')
+                            .map((b, j) => ({
+                                id: `bullet-${i}-${j}`,
+                                original: String(b),
+                                suggested: String(b),
+                            }));
+                    } else if (key !== 'fields' && key !== 'fieldOrder' && value && String(value) !== 'null') {
+                        entry[key] = {
+                            original: String(value),
+                            suggested: String(value),
+                        };
+                    }
                 }
             }
 

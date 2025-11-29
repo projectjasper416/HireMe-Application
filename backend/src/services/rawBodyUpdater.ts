@@ -43,18 +43,58 @@ export function updateRawBodyWithText(rawBody: any, newText: string): any {
 
 /**
  * Update array-based structures (e.g., certifications)
- * Example: [{name: "...", issuer: "..."}, ...]
+ * Handles both new array structure format and legacy format
  */
 function updateArrayStructure(rawBody: any[], lines: string[]): any[] {
     if (rawBody.length === 0) return rawBody;
 
     const firstItem = rawBody[0];
-    const keys = Object.keys(firstItem);
     const itemCount = rawBody.length;
 
-    // Calculate how many lines belong to each item
-    // For certifications: typically 2 lines per item (name, issuer)
-    // For experience: could be many lines (company, title, dates, bullets...)
+    // Check if using new array structure format
+    const usesArrayStructure = firstItem.fields && Array.isArray(firstItem.fields) && firstItem.fieldOrder;
+
+    if (usesArrayStructure) {
+        // New format: preserve structure, update values
+        const updated = [];
+        let lineIndex = 0;
+
+        for (let i = 0; i < itemCount && lineIndex < lines.length; i++) {
+            const originalItem = rawBody[i];
+            const fieldOrder = originalItem.fieldOrder || [];
+            const fields = originalItem.fields || [];
+            const bullets = originalItem.bullets || [];
+
+            // Update fields in order
+            const updatedFields = fields.map((field: any) => {
+                if (lineIndex < lines.length && field.key !== 'bullets') {
+                    const newValue = lines[lineIndex].replace(/^[•\-*]\s*/, '').trim();
+                    lineIndex++;
+                    return { ...field, value: newValue };
+                }
+                return field;
+            });
+
+            // Update bullets
+            let updatedBullets = [...bullets];
+            const remainingLines = lines.slice(lineIndex);
+            if (remainingLines.length > 0) {
+                updatedBullets = remainingLines.map(l => l.replace(/^[•\-*]\s*/, '').trim());
+                lineIndex += remainingLines.length;
+            }
+
+            updated.push({
+                fieldOrder,
+                fields: updatedFields,
+                bullets: updatedBullets,
+            });
+        }
+
+        return updated;
+    }
+
+    // Legacy format handling
+    const keys = Object.keys(firstItem);
     const linesPerItem = Math.floor(lines.length / itemCount);
 
     const updated = [];

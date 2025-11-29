@@ -159,61 +159,114 @@ function parseRawBody(rawBody: unknown): { summary: string[]; entries: SectionEn
       if (typeof item === 'object' && item !== null) {
         //console.log('[parseRawBody] Raw item:', JSON.stringify(item, null, 2));
         const entry: SectionEntryRenderable = { bullets: [] };
-        const obj = item as Record<string, unknown>;
+        
+        // Check if using new array structure format
+        if (item.fields && Array.isArray(item.fields) && item.fieldOrder) {
+          // New format: use fieldOrder to extract fields in EXACT order from user's resume
+          const fieldMap = new Map<string, any>();
+          for (const field of item.fields) {
+            fieldMap.set(field.key, field.value);
+          }
 
-        // Extract fields in CORRECT VISUAL ORDER
-        // For Experience: company, title, dates, location
-        // For Education: institution, degree, dates, location, gpa
+          // Preserve order from user's resume - process fields in fieldOrder sequence
+          const metaParts: string[] = [];
+          let primarySet = false;
+          let secondarySet = false;
 
-        // Primary field (company, institution, project name, etc.)
-        if (obj.company) {
-          entry.primary = String(obj.company);
-        } else if (obj.institution || obj.school || obj.university) {
-          entry.primary = String(obj.institution || obj.school || obj.university);
-        } else if (obj.name || obj.projectName) {
-          entry.primary = String(obj.name || obj.projectName);
-        } else if (obj.primary) {
-          entry.primary = String(obj.primary);
-        }
+          for (const key of item.fieldOrder) {
+            const value = fieldMap.get(key);
+            if (!value || key === 'bullets') continue;
 
-        // Secondary field (title, degree, role)
-        if (obj.title || obj.role) {
-          entry.secondary = String(obj.title || obj.role);
-        } else if (obj.degree || obj.major) {
-          entry.secondary = String(obj.degree || obj.major);
-        } else if (obj.secondary) {
-          entry.secondary = String(obj.secondary);
-        }
+            const valueStr = String(value);
 
-        // Meta field (dates, location, gpa combined)
-        const metaParts: string[] = [];
-        if (obj.dates || obj.date || obj.graduationDate) {
-          metaParts.push(String(obj.dates || obj.date || obj.graduationDate));
-        }
-        if (obj.location) {
-          metaParts.push(String(obj.location));
-        }
-        if (obj.gpa || obj.cgpa) {
-          metaParts.push(`GPA: ${obj.gpa || obj.cgpa}`);
-        }
-        if (metaParts.length > 0) {
-          entry.meta = metaParts.join(' | ');
-        }
+            // Use first field as primary if not set yet
+            if (!primarySet) {
+              entry.primary = valueStr;
+              primarySet = true;
+            }
+            // Use second field as secondary if not set yet
+            else if (!secondarySet) {
+              entry.secondary = valueStr;
+              secondarySet = true;
+            }
+            // All remaining fields go to meta in order
+            else {
+              // Special formatting for GPA
+              if (key === 'gpa' || key === 'cgpa') {
+                metaParts.push(`GPA: ${valueStr}`);
+              } else {
+                metaParts.push(valueStr);
+              }
+            }
+          }
 
-        // Handle bullets/achievements/description
-        if (Array.isArray(obj.bullets)) {
-          entry.bullets = obj.bullets.map((b) => normaliseLine(String(b)));
-        } else if (Array.isArray(obj.achievements)) {
-          entry.bullets = obj.achievements.map((a) => normaliseLine(String(a)));
-        } else if (Array.isArray(obj.details)) {
-          entry.bullets = obj.details.map((d) => normaliseLine(String(d)));
-        } else if (obj.description) {
-          const desc = String(obj.description);
-          // Split description into bullets if it contains newlines or bullet-like patterns
-          if (desc.includes('\n') || desc.includes('•') || desc.includes('-')) {
-            entry.bullets = desc.split(/\r?\n/).map((line) => normaliseLine(line)).filter(Boolean);
-          } else {
-            entry.bullets = [normaliseLine(desc)];
+          // Combine meta parts in order
+          if (metaParts.length > 0) {
+            entry.meta = metaParts.join(' | ');
+          }
+
+          // Handle bullets
+          if (item.bullets && Array.isArray(item.bullets)) {
+            entry.bullets = item.bullets.map((b: any) => normaliseLine(String(b)));
+          }
+        } else {
+          // Legacy format: extract fields from object
+          const obj = item as Record<string, unknown>;
+
+          // Extract fields in CORRECT VISUAL ORDER
+          // For Experience: company, title, dates, location
+          // For Education: institution, degree, dates, location, gpa
+
+          // Primary field (company, institution, project name, etc.)
+          if (obj.company) {
+            entry.primary = String(obj.company);
+          } else if (obj.institution || obj.school || obj.university) {
+            entry.primary = String(obj.institution || obj.school || obj.university);
+          } else if (obj.name || obj.projectName) {
+            entry.primary = String(obj.name || obj.projectName);
+          } else if (obj.primary) {
+            entry.primary = String(obj.primary);
+          }
+
+          // Secondary field (title, degree, role)
+          if (obj.title || obj.role) {
+            entry.secondary = String(obj.title || obj.role);
+          } else if (obj.degree || obj.major) {
+            entry.secondary = String(obj.degree || obj.major);
+          } else if (obj.secondary) {
+            entry.secondary = String(obj.secondary);
+          }
+
+          // Meta field (dates, location, gpa combined)
+          const metaParts: string[] = [];
+          if (obj.dates || obj.date || obj.graduationDate) {
+            metaParts.push(String(obj.dates || obj.date || obj.graduationDate));
+          }
+          if (obj.location) {
+            metaParts.push(String(obj.location));
+          }
+          if (obj.gpa || obj.cgpa) {
+            metaParts.push(`GPA: ${obj.gpa || obj.cgpa}`);
+          }
+          if (metaParts.length > 0) {
+            entry.meta = metaParts.join(' | ');
+          }
+
+          // Handle bullets/achievements/description
+          if (Array.isArray(obj.bullets)) {
+            entry.bullets = obj.bullets.map((b) => normaliseLine(String(b)));
+          } else if (Array.isArray(obj.achievements)) {
+            entry.bullets = obj.achievements.map((a) => normaliseLine(String(a)));
+          } else if (Array.isArray(obj.details)) {
+            entry.bullets = obj.details.map((d) => normaliseLine(String(d)));
+          } else if (obj.description) {
+            const desc = String(obj.description);
+            // Split description into bullets if it contains newlines or bullet-like patterns
+            if (desc.includes('\n') || desc.includes('•') || desc.includes('-')) {
+              entry.bullets = desc.split(/\r?\n/).map((line) => normaliseLine(line)).filter(Boolean);
+            } else {
+              entry.bullets = [normaliseLine(desc)];
+            }
           }
         }
 
