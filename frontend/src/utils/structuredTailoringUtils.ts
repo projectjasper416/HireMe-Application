@@ -1,5 +1,19 @@
 // Utility to parse and handle structured tailoring data
 
+/**
+ * Strip markdown formatting from text (e.g., **bold**, *italic*, etc.)
+ */
+function stripMarkdown(text: string | null | undefined): string {
+    if (!text || typeof text !== 'string') return text || '';
+    // Remove markdown bold: **text** or __text__
+    return text
+        .replace(/\*\*([^*]+)\*\*/g, '$1')  // **bold**
+        .replace(/\*([^*]+)\*/g, '$1')      // *italic* (but not **bold**)
+        .replace(/__([^_]+)__/g, '$1')      // __bold__
+        .replace(/_([^_]+)_/g, '$1')        // _italic_ (but not __bold__)
+        .replace(/~~([^~]+)~~/g, '$1');     // ~~strikethrough~~
+}
+
 export interface BulletState {
     id: string;
     original: string;
@@ -25,14 +39,14 @@ export interface StructuredTailoringState {
  * Parse AI tailoring from backend
  * Accepts either a JSON string or an already-parsed object
  */
-export function parseAITailoring(ai_tailoring_html: string | object | null): StructuredTailoringState | null {
-    if (!ai_tailoring_html) return null;
+export function parseAITailoring(tailored_suggestions: string | object | null): StructuredTailoringState | null {
+    if (!tailored_suggestions) return null;
 
     try {
         // Handle both string and object inputs
-        const parsed = typeof ai_tailoring_html === 'string' 
-            ? JSON.parse(ai_tailoring_html)
-            : ai_tailoring_html;
+        const parsed = typeof tailored_suggestions === 'string' 
+            ? JSON.parse(tailored_suggestions)
+            : tailored_suggestions;
 
         if (parsed.type && parsed.entries) {
             const result: StructuredTailoringState = {
@@ -101,8 +115,8 @@ export function parseAITailoring(ai_tailoring_html: string | object | null): Str
                                 const field = value as any;
                                 if ('original' in field || 'suggested' in field) {
                                     entry.metadata[key] = {
-                                        original: field.original || '',
-                                        suggested: field.suggested || null,
+                                        original: stripMarkdown(field.original || ''),
+                                        suggested: field.suggested ? stripMarkdown(field.suggested) : null,
                                         final: null,
                                     };
                                     processedKeys.add(key);
@@ -140,8 +154,8 @@ export function parseAITailoring(ai_tailoring_html: string | object | null): Str
                     if (e.bullets && Array.isArray(e.bullets)) {
                         entry.bullets = e.bullets.map((b: any) => ({
                             id: b.id,
-                            original: b.original,
-                            suggested: b.suggested,
+                            original: stripMarkdown(b.original || ''),
+                            suggested: b.suggested ? stripMarkdown(b.suggested) : null,
                             final: null,
                         }));
                     }
@@ -268,7 +282,7 @@ export function acceptBullet(section: StructuredTailoringState, bulletId: string
             ...entry,
             bullets: entry.bullets.map(b =>
                 b.id === bulletId && b.suggested
-                    ? { ...b, final: b.suggested, suggested: null }
+                    ? { ...b, final: stripMarkdown(b.suggested), suggested: null }
                     : b
             ),
         })),
@@ -293,7 +307,7 @@ export function updateBullet(section: StructuredTailoringState, bulletId: string
         entries: section.entries.map(entry => ({
             ...entry,
             bullets: entry.bullets.map(b =>
-                b.id === bulletId ? { ...b, final: newText, suggested: null } : b
+                b.id === bulletId ? { ...b, final: stripMarkdown(newText), suggested: null } : b
             ),
         })),
     };
@@ -305,7 +319,7 @@ export function updateBulletSuggestion(section: StructuredTailoringState, bullet
         entries: section.entries.map(entry => ({
             ...entry,
             bullets: entry.bullets.map(b =>
-                b.id === bulletId ? { ...b, suggested } : b
+                b.id === bulletId ? { ...b, suggested: stripMarkdown(suggested) } : b
             ),
         })),
     };
@@ -327,7 +341,7 @@ export function acceptField(section: StructuredTailoringState, entryId: string, 
                     ...entry.metadata,
                     [fieldName]: {
                         ...field,
-                        final: field.suggested,
+                        final: stripMarkdown(field.suggested),
                         suggested: null,
                     },
                 },
@@ -372,7 +386,7 @@ export function updateField(section: StructuredTailoringState, entryId: string, 
                     ...entry.metadata,
                     [fieldName]: {
                         ...field,
-                        final: newText,
+                        final: stripMarkdown(newText),
                         suggested: null,
                     },
                 },

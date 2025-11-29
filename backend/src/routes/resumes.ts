@@ -114,9 +114,9 @@ resumeRouter.post('/', async (req: AuthenticatedRequest, res) => {
       detail,
     });
   }
-
+console.log('[resumes.ts] parsedSections:', JSON.stringify(parsedSections));
   const sanitizedSections = sanitizeSections(parsedSections);
-
+console.log('[resumes.ts] sanitizedSections:', JSON.stringify(sanitizedSections));
   const hasContactSection = sanitizedSections.some((section) =>
     section.heading.toLowerCase().includes('contact')
   );
@@ -146,7 +146,7 @@ resumeRouter.post('/', async (req: AuthenticatedRequest, res) => {
     .map((section) => `${section.heading}\n${section.body}`)
     .join('\n\n');
   const resumeId = uuid();
-
+console.log('[resumes.ts] normalizedSections:', JSON.stringify(normalizedSections));
   const { error } = await supabaseAdmin.from('resumes').insert({
     id: resumeId,
     user_id: req.user!.id,

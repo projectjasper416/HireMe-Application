@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Sparkles } from 'lucide-react';
+import { wordDiff, renderWordDiff } from '../utils/wordDiff';
 
 interface EditableBulletProps {
     bulletId: string;
@@ -15,6 +16,18 @@ interface EditableBulletProps {
     onReject: (bulletId: string) => void;
 }
 
+// Helper to strip markdown formatting from text
+const stripMarkdown = (text: string): string => {
+    if (!text) return text;
+    // Remove markdown bold: **text** or __text__
+    return text
+        .replace(/\*\*([^*]+)\*\*/g, '$1')  // **bold**
+        .replace(/\*([^*]+)\*/g, '$1')      // *italic* (but not **bold**)
+        .replace(/__([^_]+)__/g, '$1')      // __bold__
+        .replace(/_([^_]+)_/g, '$1')         // _italic_ (but not __bold__)
+        .replace(/~~([^~]+)~~/g, '$1');     // ~~strikethrough~~
+};
+
 // Helper to convert any value to string, filtering out null objects
 const toString = (value: any): string => {
     if (!value) return '';
@@ -23,7 +36,8 @@ const toString = (value: any): string => {
         if (value === 'null' || value === '{}' || value.includes('"original":null,"suggested":null')) {
             return '';
         }
-        return value;
+        // Strip markdown formatting
+        return stripMarkdown(value);
     }
     if (typeof value === 'object' && value !== null) {
         // Check if it's a null object
@@ -38,9 +52,9 @@ const toString = (value: any): string => {
         if (str === '{}' || str.includes('"original":null,"suggested":null')) {
             return '';
         }
-        return str;
+        return stripMarkdown(str);
     }
-    return String(value);
+    return stripMarkdown(String(value));
 };
 
 export default function EditableBullet({
@@ -92,11 +106,16 @@ export default function EditableBullet({
 
     const hasEdit = finalStr !== null && finalStr.trim() !== '';
 
+    // Compute word-level diff for display
+    const diffTokens = useMemo(() => {
+        if (hasSuggestion && !hasEdit) {
+            return wordDiff(originalStr, suggestedStr);
+        }
+        return null;
+    }, [hasSuggestion, hasEdit, originalStr, suggestedStr]);
+
     // For display when NOT showing diff:
-    // - If has suggestion, compare against final (if exists) or original
-    // - Otherwise use final if edited, or original
-    const baseText = hasEdit ? finalStr : originalStr;
-    const displayText = baseText;
+    const displayText = hasEdit ? finalStr : originalStr;
 
     if (isEditing) {
         return (
@@ -135,31 +154,11 @@ export default function EditableBullet({
             <div className="flex items-start gap-2">
                 <span className="text-gray-600 mt-1">•</span>
                 <div className="flex-1">
-                    {hasSuggestion ? (
-                        // Show diff: base text (red strikethrough) + suggested (green underline)
-                        <div className="space-y-1">
-                            <div
-                                style={{
-                                    textDecoration: 'line-through',
-                                    color: '#dc2626',
-                                    backgroundColor: '#fee2e2',
-                                    padding: '2px 4px',
-                                    borderRadius: '4px',
-                                }}
-                            >
-                                {baseText}
-                            </div>
-                            <div
-                                style={{
-                                    textDecoration: 'underline',
-                                    textDecorationColor: '#16a34a',
-                                    color: '#16a34a',
-                                    backgroundColor: '#dcfce7',
-                                    padding: '2px 4px',
-                                    borderRadius: '4px',
-                                }}
-                            >
-                                {suggestedStr}
+                    {hasSuggestion && diffTokens ? (
+                        // Show word-level diff: inline changes with red strikethrough and green underline
+                        <div className="space-y-2">
+                            <div className="leading-relaxed">
+                                {renderWordDiff(diffTokens)}
                             </div>
                             <div className="flex gap-2 mt-2">
                                 <button

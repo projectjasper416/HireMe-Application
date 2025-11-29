@@ -146,13 +146,13 @@ Return ONLY valid JSON in the universal format.`;
         prompt: fullPrompt,
         maxTokens: 3000,
     });
-
+    //console.log('[tailorSectionStructured] Body:', JSON.stringify(body));
     const response = await fetch(apiUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
     });
-
+console.log('[tailorSectionStructured] Response:', response);
     const raw = await response.text();
 
     if (!response.ok) {
@@ -168,7 +168,7 @@ Return ONLY valid JSON in the universal format.`;
         }
 
         const content = parseLLMResponse(provider, jsonResponse);
-        console.log('[tailorSectionStructured] Raw content from LLM:', content); // Debug log
+        //console.log('[tailorSectionStructured] Raw content from LLM:', content); // Debug log
 
         if (!content) {
             throw new Error('Empty content from LLM');

@@ -93,10 +93,6 @@ function stripRedlineToPlainText(html: string): string {
     .trim();
 }
 
-function acceptAllHtml(html: string): string {
-  const text = stripRedlineToPlainText(html);
-  return convertPlainTextToHtml(text);
-}
 
 export function AIReviewPage({ apiBaseUrl, token }: Props) {
   const { resumeId } = useParams<{ resumeId: string }>();
@@ -200,49 +196,6 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
     }
   }
 
-  async function saveSection(index: number) {
-    if (!resumeId) return;
-    setSections((prev) =>
-      prev.map((section, idx) => (idx === index ? { ...section, saving: true } : section))
-    );
-    setError(null);
-    try {
-      const section = sections[index];
-      const node = sectionRefs.current[index];
-      const currentHtml = node ? sanitizeHtml(node.innerHTML) : section.editedHtml;
-      const plainText = stripRedlineToPlainText(currentHtml);
-      const res = await fetch(`${apiBaseUrl}/resumes/${resumeId}/sections/${index}`, {
-        method: 'PUT',
-        headers: authHeaders,
-        body: JSON.stringify({ content: plainText, rawBody: section.raw_body ?? null }),
-      });
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        throw new Error(json.error || 'Failed to save section');
-      }
-      const json = await res.json();
-      setSections((prev) =>
-        prev.map((item, idx) =>
-          idx === index
-            ? {
-              ...item,
-              body: json.section.body,
-              raw_body: json.section.raw_body,
-              editedHtml: convertPlainTextToHtml(json.section.body),
-              reviewHtml: item.reviewHtml,
-              saving: false,
-            }
-            : item
-        )
-      );
-    } catch (err: any) {
-      setError(err.message);
-      setSections((prev) =>
-        prev.map((section, idx) => (idx === index ? { ...section, saving: false } : section))
-      );
-    }
-  }
-
   function updateEditedHtml(index: number, html: string) {
     const sanitized = sanitizeHtml(html);
     setSections((prev) =>
@@ -250,24 +203,6 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
         if (idx !== index || item.editedHtml === sanitized) return item;
         return { ...item, editedHtml: sanitized };
       })
-    );
-  }
-
-  function handleAcceptAll(index: number) {
-    setSections((prev) =>
-      prev.map((item, idx) =>
-        idx === index ? { ...item, editedHtml: acceptAllHtml(item.editedHtml) } : item
-      )
-    );
-  }
-
-  function handleRevert(index: number) {
-    setSections((prev) =>
-      prev.map((item, idx) =>
-        idx === index
-          ? { ...item, editedHtml: item.reviewHtml ?? convertPlainTextToHtml(item.body) }
-          : item
-      )
     );
   }
 
@@ -624,28 +559,6 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
                           Run AI review to generate inline suggestions for this section.
                         </p>
                       )}
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleAcceptAll(index)}
-                        disabled={!section.reviewHtml}
-                        className="rounded-xl border border-gray-200 px-3 py-2 text-sm text-gray-600 transition-all hover:border-black/40 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        Accept All
-                      </button>
-                      <button
-                        onClick={() => handleRevert(index)}
-                        className="rounded-xl border border-gray-200 px-3 py-2 text-sm text-gray-600 transition-all hover:border-black/40"
-                      >
-                        Revert
-                      </button>
-                      <button
-                        onClick={() => saveSection(index)}
-                        disabled={section.saving}
-                        className="rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition-all hover:scale-[1.02] hover:shadow-md disabled:cursor-not-allowed disabled:opacity-70"
-                      >
-                        {section.saving ? 'Saving…' : 'Save Section'}
-                      </button>
                     </div>
                   </header>
 

@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Sparkles } from 'lucide-react';
+import { wordDiff, renderWordDiff } from '../utils/wordDiff';
 
 interface EditableFieldProps {
     fieldId: string;
@@ -16,6 +17,18 @@ interface EditableFieldProps {
     className?: string;
 }
 
+// Helper to strip markdown formatting from text
+const stripMarkdown = (text: string): string => {
+    if (!text) return text;
+    // Remove markdown bold: **text** or __text__
+    return text
+        .replace(/\*\*([^*]+)\*\*/g, '$1')  // **bold**
+        .replace(/\*([^*]+)\*/g, '$1')      // *italic* (but not **bold**)
+        .replace(/__([^_]+)__/g, '$1')      // __bold__
+        .replace(/_([^_]+)_/g, '$1')         // _italic_ (but not __bold__)
+        .replace(/~~([^~]+)~~/g, '$1');     // ~~strikethrough~~
+};
+
 // Helper to filter null values
 const toString = (value: any): string => {
     if (!value) return '';
@@ -23,15 +36,16 @@ const toString = (value: any): string => {
         if (value === 'null' || value === '{}' || value.includes('"original":null')) {
             return '';
         }
-        return value;
+        // Strip markdown formatting
+        return stripMarkdown(value);
     }
     if (typeof value === 'object' && value !== null) {
         if (value.original === null && value.suggested === null) return '';
         const str = JSON.stringify(value, null, 2);
         if (str === '{}' || str.includes('"original":null')) return '';
-        return str;
+        return stripMarkdown(str);
     }
-    return String(value);
+    return stripMarkdown(String(value));
 };
 
 export default function EditableField({
@@ -78,6 +92,15 @@ export default function EditableField({
         suggestedStr.trim() !== originalStr.trim();
 
     const hasEdit = finalStr !== null && finalStr.trim() !== '';
+
+    // Compute word-level diff for display
+    const diffTokens = useMemo(() => {
+        if (hasSuggestion && !hasEdit) {
+            return wordDiff(originalStr, suggestedStr);
+        }
+        return null;
+    }, [hasSuggestion, hasEdit, originalStr, suggestedStr]);
+
     const displayText = hasEdit ? finalStr : originalStr;
 
     if (isEditing) {
@@ -118,33 +141,11 @@ export default function EditableField({
             onMouseEnter={() => setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
         >
-            {hasSuggestion && !hasEdit ? (
-                // Show diff
+            {hasSuggestion && !hasEdit && diffTokens ? (
+                // Show word-level diff: inline changes with red strikethrough and green underline
                 <div className="space-y-1">
-                    <div
-                        style={{
-                            textDecoration: 'line-through',
-                            color: '#dc2626',
-                            backgroundColor: '#fee2e2',
-                            padding: '2px 4px',
-                            borderRadius: '4px',
-                            display: 'inline-block',
-                        }}
-                    >
-                        {originalStr}
-                    </div>
-                    <div
-                        style={{
-                            textDecoration: 'underline',
-                            textDecorationColor: '#16a34a',
-                            color: '#16a34a',
-                            backgroundColor: '#dcfce7',
-                            padding: '2px 4px',
-                            borderRadius: '4px',
-                            display: 'inline-block',
-                        }}
-                    >
-                        {suggestedStr}
+                    <div className="leading-relaxed">
+                        {renderWordDiff(diffTokens)}
                     </div>
                     <div className="flex gap-2 mt-1">
                         <button

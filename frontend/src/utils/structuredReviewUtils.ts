@@ -1,5 +1,19 @@
 // Utility to parse and handle structured review data
 
+/**
+ * Strip markdown formatting from text (e.g., **bold**, *italic*, etc.)
+ */
+function stripMarkdown(text: string | null | undefined): string {
+    if (!text || typeof text !== 'string') return text || '';
+    // Remove markdown bold: **text** or __text__
+    return text
+        .replace(/\*\*([^*]+)\*\*/g, '$1')  // **bold**
+        .replace(/\*([^*]+)\*/g, '$1')      // *italic* (but not **bold**)
+        .replace(/__([^_]+)__/g, '$1')      // __bold__
+        .replace(/_([^_]+)_/g, '$1')        // _italic_ (but not __bold__)
+        .replace(/~~([^~]+)~~/g, '$1');     // ~~strikethrough~~
+}
+
 export interface BulletState {
     id: string;
     original: string;
@@ -47,8 +61,8 @@ export function parseAISuggestions(ai_suggestions_html: string | null): Structur
                         if (key !== 'id' && key !== 'bullets' && typeof value === 'object' && value !== null) {
                             const field = value as any;
                             entry.metadata[key] = {
-                                original: field.original,
-                                suggested: field.suggested,
+                                original: stripMarkdown(field.original || ''),
+                                suggested: field.suggested ? stripMarkdown(field.suggested) : null,
                                 final: null,
                             };
                         }
@@ -58,8 +72,8 @@ export function parseAISuggestions(ai_suggestions_html: string | null): Structur
                     if (e.bullets && Array.isArray(e.bullets)) {
                         entry.bullets = e.bullets.map((b: any) => ({
                             id: b.id,
-                            original: b.original,
-                            suggested: b.suggested,
+                            original: stripMarkdown(b.original || ''),
+                            suggested: b.suggested ? stripMarkdown(b.suggested) : null,
                             final: null,
                         }));
                     }
@@ -188,7 +202,7 @@ export function acceptBullet(section: StructuredSectionState, bulletId: string):
             ...entry,
             bullets: entry.bullets.map(b =>
                 b.id === bulletId && b.suggested
-                    ? { ...b, final: b.suggested, suggested: null }
+                    ? { ...b, final: stripMarkdown(b.suggested), suggested: null }
                     : b
             ),
         })),
@@ -213,7 +227,7 @@ export function updateBullet(section: StructuredSectionState, bulletId: string, 
         entries: section.entries.map(entry => ({
             ...entry,
             bullets: entry.bullets.map(b =>
-                b.id === bulletId ? { ...b, final: newText, suggested: null } : b
+                b.id === bulletId ? { ...b, final: stripMarkdown(newText), suggested: null } : b
             ),
         })),
     };
@@ -225,7 +239,7 @@ export function updateBulletSuggestion(section: StructuredSectionState, bulletId
         entries: section.entries.map(entry => ({
             ...entry,
             bullets: entry.bullets.map(b =>
-                b.id === bulletId ? { ...b, suggested } : b
+                b.id === bulletId ? { ...b, suggested: stripMarkdown(suggested) } : b
             ),
         })),
     };
@@ -247,7 +261,7 @@ export function acceptField(section: StructuredSectionState, entryId: string, fi
                     ...entry.metadata,
                     [fieldName]: {
                         ...field,
-                        final: field.suggested,
+                        final: stripMarkdown(field.suggested),
                         suggested: null,
                     },
                 },
@@ -292,7 +306,7 @@ export function updateField(section: StructuredSectionState, entryId: string, fi
                     ...entry.metadata,
                     [fieldName]: {
                         ...field,
-                        final: newText,
+                        final: stripMarkdown(newText),
                         suggested: null,
                     },
                 },

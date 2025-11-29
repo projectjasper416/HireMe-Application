@@ -38,10 +38,8 @@ interface SectionState {
     heading: string;
     body: string;
     raw_body?: unknown;
-
     editedHtml: string;
     saving: boolean;
-    regenerating: boolean;
     structuredTailoring: StructuredTailoringState | null;
 }
 
@@ -77,31 +75,6 @@ function convertPlainTextToHtml(text: string): string {
         .map((line) => (line.trim().length ? `<p>${escapeHtml(line)}</p>` : '<p><br/></p>'))
         .join('');
     return sanitizeHtml(html);
-}
-
-function stripRedlineToPlainText(html: string): string {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    doc.querySelectorAll('del').forEach((node) => node.remove());
-    doc.querySelectorAll('ins').forEach((node) => node.replaceWith(node.textContent ?? ''));
-    doc.body.querySelectorAll('br').forEach((br) => br.replaceWith('\n'));
-    const blocks = Array.from(doc.body.querySelectorAll('p, div'));
-    blocks.forEach((block, idx) => {
-        const textContent = block.textContent ?? '';
-        const suffix = idx === blocks.length - 1 ? '' : '\n';
-        block.replaceWith(doc.createTextNode(textContent + suffix));
-    });
-    const plain = doc.body.textContent ?? '';
-    return plain
-        .replace(/\u00A0/g, ' ')
-        .replace(/\r/g, '')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-}
-
-function acceptAllHtml(html: string): string {
-    const text = stripRedlineToPlainText(html);
-    return convertPlainTextToHtml(text);
 }
 
 export function AITailorPage({ apiBaseUrl, token }: Props) {
@@ -150,10 +123,8 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                         heading: s.heading,
                         body: s.body,
                         raw_body: s.raw_body,
-
                         editedHtml: convertPlainTextToHtml(s.body),
                         saving: false,
-                        regenerating: false,
                         structuredTailoring: null,
                     }));
                     setSections(initialSections);
@@ -166,10 +137,7 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
             }
         }
         loadData();
-        loadData();
     }, [apiBaseUrl, authHeaders, resumeId]);
-
-
 
     // Cleanup preview URL on unmount
     useEffect(() => {
@@ -220,7 +188,6 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
 
                                 return {
                                     ...section,
-
                                     editedHtml: sanitizeHtml(match.final_updated || ''),
                                     structuredTailoring,
                                 };
@@ -228,7 +195,6 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                             // Reset to original if no tailoring found for this job
                             return {
                                 ...section,
-
                                 editedHtml: convertPlainTextToHtml(section.body),
                                 structuredTailoring: null,
                             };
@@ -282,7 +248,6 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
 
                         return {
                             ...section,
-
                             editedHtml: sanitizeHtml(match.final_updated || ''),
                             structuredTailoring,
                         };
@@ -473,138 +438,6 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
         }
     }
 
-    async function regenerateSection(index: number) {
-        if (!resumeId || !selectedJobId) return;
-
-        setSections((prev) =>
-            prev.map((section, idx) => (idx === index ? { ...section, regenerating: true } : section))
-        );
-        setError(null);
-
-        try {
-            const section = sections[index];
-            const res = await fetch(`${apiBaseUrl}/resumes/${resumeId}/tailor`, {
-                method: 'POST',
-                headers: authHeaders,
-                body: JSON.stringify({
-                    jobId: selectedJobId,
-                    sectionName: section.heading
-                }),
-            });
-
-            if (!res.ok) {
-                const json = await res.json();
-                throw new Error(json.error || 'Regeneration failed');
-            }
-
-            const json = await res.json();
-            const results = json.tailorings as TailoringResult[];
-            const match = results.find((t) => t.section_name === section.heading);
-
-            if (match) {
-                setSections((prev) =>
-                    prev.map((item, idx) =>
-                        idx === index
-                            ? {
-                                ...item,
-
-                                editedHtml: sanitizeHtml(match.final_updated || ''),
-                                regenerating: false,
-                            }
-                            : item
-                    )
-                );
-            } else {
-                throw new Error('No suggestion returned');
-            }
-        } catch (err: any) {
-            setError(err.message);
-            setSections((prev) =>
-                prev.map((section, idx) => (idx === index ? { ...section, regenerating: false } : section))
-            );
-        }
-    }
-
-    async function saveSection(index: number) {
-        if (!resumeId) return;
-        setSections((prev) =>
-            prev.map((section, idx) => (idx === index ? { ...section, saving: true } : section))
-        );
-        setError(null);
-        try {
-            const section = sections[index];
-            const node = sectionRefs.current[index];
-            const currentHtml = node ? sanitizeHtml(node.innerHTML) : section.editedHtml;
-
-            if (selectedJobId) {
-                // Save to tailorings (specific to this job)
-                // We save the current HTML (preserving diffs if any, or clean text if accepted)
-                const res = await fetch(`${apiBaseUrl}/resumes/${resumeId}/tailorings`, {
-                    method: 'PUT',
-                    headers: authHeaders,
-                    body: JSON.stringify({
-                        jobId: selectedJobId,
-                        sectionName: section.heading,
-
-                        originalText: section.body,
-                    }),
-                });
-
-                if (!res.ok) {
-                    const json = await res.json();
-                    throw new Error(json.error || 'Failed to save tailoring');
-                }
-
-                const json = await res.json();
-                setSections((prev) =>
-                    prev.map((item, idx) =>
-                        idx === index
-                            ? {
-                                ...item,
-
-                                editedHtml: sanitizeHtml(json.tailoring.final_updated || ''),
-                                saving: false,
-                            }
-                            : item
-                    )
-                );
-            } else {
-                // Save to base resume (global)
-                const plainText = stripRedlineToPlainText(currentHtml);
-                const res = await fetch(`${apiBaseUrl}/resumes/${resumeId}/sections/${index}`, {
-                    method: 'PUT',
-                    headers: authHeaders,
-                    body: JSON.stringify({ content: plainText, rawBody: section.raw_body ?? null }),
-                });
-
-                if (!res.ok) {
-                    throw new Error('Failed to save section');
-                }
-
-                const json = await res.json();
-                setSections((prev) =>
-                    prev.map((item, idx) =>
-                        idx === index
-                            ? {
-                                ...item,
-                                body: json.section.body,
-                                raw_body: json.section.raw_body,
-                                editedHtml: convertPlainTextToHtml(json.section.body),
-
-                                saving: false,
-                            }
-                            : item
-                    )
-                );
-            }
-        } catch (err: any) {
-            setError(err.message);
-            setSections((prev) =>
-                prev.map((section, idx) => (idx === index ? { ...section, saving: false } : section))
-            );
-        }
-    }
-
     function updateEditedHtml(index: number, html: string) {
         const sanitized = sanitizeHtml(html);
         setSections((prev) =>
@@ -612,24 +445,6 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                 if (idx !== index || item.editedHtml === sanitized) return item;
                 return { ...item, editedHtml: sanitized };
             })
-        );
-    }
-
-    function handleAccept(index: number) {
-        setSections((prev) =>
-            prev.map((item, idx) =>
-                idx === index ? { ...item, editedHtml: acceptAllHtml(item.editedHtml) } : item
-            )
-        );
-    }
-
-    function handleReject(index: number) {
-        setSections((prev) =>
-            prev.map((item, idx) =>
-                idx === index
-                    ? { ...item, editedHtml: convertPlainTextToHtml(item.body) } // Revert to original body
-                    : item
-            )
         );
     }
 
@@ -743,31 +558,6 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                                                         Select a job and click "Tailor Resume" to see suggestions.
                                                     </p>
                                                 )}
-                                            </div>
-                                            <div className="flex gap-2">
-                                                <button
-                                                    onClick={() => handleAccept(index)}
-                                                    disabled={!section.structuredTailoring}
-                                                    className="flex items-center gap-1 rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 transition-all hover:bg-green-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                                    title="Accept All Changes"
-                                                >
-                                                    <span>👍</span> Accept
-                                                </button>
-                                                <button
-                                                    onClick={() => handleReject(index)}
-                                                    disabled={!section.structuredTailoring}
-                                                    className="flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 transition-all hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                                    title="Reject All Changes"
-                                                >
-                                                    <span>👎</span> Reject
-                                                </button>
-                                                <button
-                                                    onClick={() => saveSection(index)}
-                                                    disabled={section.saving}
-                                                    className="rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition-all hover:scale-[1.02] hover:shadow-md disabled:cursor-not-allowed disabled:opacity-70"
-                                                >
-                                                    {section.saving ? 'Saving…' : 'Save Section'}
-                                                </button>
                                             </div>
                                         </header>
 

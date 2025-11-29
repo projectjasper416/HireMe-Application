@@ -33,7 +33,7 @@ CRITICAL: For structured sections (Experience, Education, Projects, etc.), the "
 
 IMPORTANT: Maintain the EXACT field order as they appear visually in the resume (top to bottom).
 
-For Experience section, each entry MUST have fields in this EXACT order:
+For Experience section, each entry MUST have fields in this EXACT order which user uploaded resume have:
 {
   "company": "Company Name",
   "title": "Job Title",
@@ -42,7 +42,7 @@ For Experience section, each entry MUST have fields in this EXACT order:
   "bullets": ["Achievement 1", "Achievement 2", ...]
 }
 
-For Education section, each entry MUST have fields in this EXACT order:
+For Education section, each entry MUST have fields in this EXACT order which user uploaded resume have:
 {
   "institution": "School Name",
   "degree": "Degree Name",
@@ -52,14 +52,14 @@ For Education section, each entry MUST have fields in this EXACT order:
   "bullets": ["Detail 1", ...] (optional)
 }
 
-For Projects section, each entry should have:
+For Projects section, each entry should have fields in this EXACT order which user uploaded resume have:
 {
   "name": "Project Name",
   "dates": "..." (optional),
   "description": "..." or "bullets": [...]
 }
 
-For Certifications section, each entry should have:
+For Certifications section, each entry should have fields in this EXACT order which user uploaded resume have:
 {
   "name": "Certification Name",
   "issuer": "..." (optional),
@@ -364,7 +364,7 @@ export async function parseResumeWithLLM({ fileBase64 }: ParseArgs): Promise<Res
     headers,
     body: JSON.stringify(body),
   });
-
+//console.log('[parseResumeWithLLM] Response:', JSON.stringify(response));  
   if (!response) {
     throw new Error('Parsing LLM request failed without receiving a response.');
   }
@@ -378,6 +378,7 @@ export async function parseResumeWithLLM({ fileBase64 }: ParseArgs): Promise<Res
   let json: any;
   try {
     json = JSON.parse(raw);
+    //console.log('[parseResumeWithLLM] JSON:', JSON.stringify(json));
   } catch (err) {
     throw new Error(`Parsing LLM returned invalid JSON: ${raw}`);
   }
@@ -517,7 +518,7 @@ function extractFormattedSectionsFromCandidateText(text: string): ExportFormatRe
   return null;
 }
 
-export async function formatSectionsForExport(sections: ResumeSection[]): Promise<FormattedSection[]> {
+/*export async function formatSectionsForExport(sections: ResumeSection[]): Promise<FormattedSection[]> {
   const apiUrl = process.env.LLM_PARSE_API_URL;
   const apiKey = process.env.LLM_PARSE_API_KEY;
   const model = process.env.LLM_PARSE_MODEL;
@@ -674,7 +675,7 @@ Sections JSON:\n${JSON.stringify(sections, null, 2)}`;
         (section.summary && section.summary.length > 0) ||
         (section.entries && section.entries.length > 0)
     );
-}
+}*/
 
 export type { FormattedSection, FormattedSectionEntry };
 
