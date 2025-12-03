@@ -45,6 +45,7 @@ interface SectionState {
 }
 
 import { ResumeExportSidebar, ResumeTemplate } from '../components/ResumeExportSidebar';
+import { GenericResumeScoreCard } from '../components/GenericResumeScoreCard';
 
 const SANITIZE_CONFIG: DOMPurifyConfig = {
   ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'b', 'i', 'ul', 'ol', 'li', 'span', 'div', 'del', 'ins'],
@@ -104,6 +105,8 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
   const [selectedTemplateName, setSelectedTemplateName] = useState<string>('Template');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [scoreRefreshTrigger, setScoreRefreshTrigger] = useState(0);
+  const scoreRecalcTimeoutRef = useRef<number | null>(null);
   const sectionRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   const authHeaders = useMemo(
@@ -189,6 +192,12 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
         throw new Error(json.error || 'Review failed');
       }
       await fetchSections();
+      
+      // Score is automatically calculated on backend after review completes
+      // Just trigger a refresh after a short delay to fetch the new score
+      setTimeout(() => {
+        setScoreRefreshTrigger(prev => prev + 1);
+      }, 2000);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -378,6 +387,24 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
         headers: authHeaders,
         body: JSON.stringify({ finalUpdated }),
       });
+
+      // Debounced score recalculation - clear previous timeout and set new one
+      if (scoreRecalcTimeoutRef.current) {
+        clearTimeout(scoreRecalcTimeoutRef.current);
+      }
+      
+      scoreRecalcTimeoutRef.current = setTimeout(async () => {
+        try {
+          await fetch(`${apiBaseUrl}/resumes/${resumeId}/calculate-score`, {
+            method: 'POST',
+            headers: authHeaders,
+          });
+          // Only trigger refresh once after calculation completes
+          setScoreRefreshTrigger(prev => prev + 1);
+        } catch (err) {
+          console.error('Failed to recalculate score:', err);
+        }
+      }, 3000); // Wait 3 seconds after last change before recalculating
     } catch (err) {
       console.error('Failed to auto-save:', err);
     }
@@ -589,7 +616,14 @@ export function AIReviewPage({ apiBaseUrl, token }: Props) {
         </div>
 
         {/* Right Column: Template Selection & Preview */}
-        <div className="lg:col-span-1">
+        <div className="lg:col-span-1 space-y-6">
+                        <GenericResumeScoreCard
+                            key={scoreRefreshTrigger}
+                            apiBaseUrl={apiBaseUrl}
+                            token={token}
+                            resumeId={resumeId}
+                            refreshTrigger={scoreRefreshTrigger}
+                        />
           <ResumeExportSidebar
             apiBaseUrl={apiBaseUrl}
             token={token}

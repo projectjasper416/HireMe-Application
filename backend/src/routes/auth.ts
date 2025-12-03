@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { supabaseAdmin, supabaseClient } from '../config/supabase';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, type AuthenticatedRequest } from '../middleware/auth';
 import type { UserRole } from '../types/roles';
 
 export const authRouter = Router();
@@ -51,7 +51,7 @@ authRouter.get('/oauth/url', (req, res) => {
 });
 
 // Example of an authenticated endpoint with role-based access
-authRouter.get('/me', requireAuth(), async (req, res) => {
+authRouter.get('/me', requireAuth(), async (req: AuthenticatedRequest, res) => {
   return res.json({ user: req.user });
 });
 

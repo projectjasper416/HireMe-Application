@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Sparkles } from 'lucide-react';
 import { wordDiff, renderWordDiff } from '../utils/wordDiff';
 
@@ -83,6 +83,11 @@ export default function EditableBullet({
     const [editText, setEditText] = useState(finalStr || suggestedStr || originalStr);
     const [isHovered, setIsHovered] = useState(false);
 
+    // Update editText when props change (for editing mode)
+    useEffect(() => {
+        setEditText(finalStr || suggestedStr || originalStr);
+    }, [finalStr, suggestedStr, originalStr]);
+
     const handleSave = () => {
         onSave(bulletId, editText);
     };
@@ -98,21 +103,67 @@ export default function EditableBullet({
     };
 
     // Determine what to display
-    // Show suggestion if it exists and is different from both original AND final
-    const hasSuggestion = suggestedStr &&
+    // Show suggestion if it exists and is different from original
+    // If final is null/undefined/empty, always show suggestion if it exists and differs from original
+    // If final exists, only show suggestion if it's different from final (user already accepted something different)
+    // Check if final has a value - must be explicitly not null/undefined and not empty string
+    const hasFinalValue = final !== null && final !== undefined && finalStr !== null && finalStr.trim() !== '';
+    
+    // Show suggestion if:
+    // 1. suggestedStr exists and is not empty
+    // 2. suggestedStr differs from originalStr
+    // 3. Either there's no final value, OR the suggestion differs from the final value
+    const hasSuggestion = suggestedStr !== null &&
         suggestedStr.trim() !== '' &&
         suggestedStr.trim() !== originalStr.trim() &&
-        (!finalStr || suggestedStr.trim() !== finalStr.trim());
+        (!hasFinalValue || suggestedStr.trim() !== finalStr!.trim());
 
-    const hasEdit = finalStr !== null && finalStr.trim() !== '';
+    const hasEdit = hasFinalValue;
+    
 
     // Compute word-level diff for display
     const diffTokens = useMemo(() => {
-        if (hasSuggestion && !hasEdit) {
-            return wordDiff(originalStr, suggestedStr);
+        // Only compute diff if we have a suggestion, no final value, and both strings exist
+        if (hasSuggestion && !hasEdit && suggestedStr && originalStr) {
+            try {
+                const tokens = wordDiff(originalStr, suggestedStr);
+                // Filter out tokens that are only unchanged (no visual diff)
+                const hasChanges = tokens.some(t => t.type === 'deleted' || t.type === 'inserted');
+                
+                // Debug logging
+                console.log('🔍 Word diff debug:', {
+                    bulletId,
+                    hasSuggestion,
+                    hasEdit,
+                    hasFinalValue,
+                    final: final,
+                    suggested: suggested,
+                    hasChanges,
+                    tokenCount: tokens.length,
+                    tokens: tokens.slice(0, 3).map(t => ({ type: t.type, text: t.text.substring(0, 30) })),
+                });
+                
+                // Return tokens if we have visual changes, otherwise null
+                return hasChanges && tokens.length > 0 ? tokens : null;
+            } catch (error) {
+                console.error('Error computing word diff:', error);
+                return null;
+            }
+        } else {
+            // Debug why diff isn't being computed
+            console.log('❌ Word diff NOT computed:', {
+                bulletId,
+                hasSuggestion,
+                hasEdit,
+                hasFinalValue,
+                final: final,
+                suggested: suggested,
+                hasSuggestedStr: !!suggestedStr,
+                hasOriginalStr: !!originalStr,
+            });
         }
         return null;
-    }, [hasSuggestion, hasEdit, originalStr, suggestedStr]);
+    }, [hasSuggestion, hasEdit, originalStr, suggestedStr, bulletId, hasFinalValue, final, suggested]);
 
     // For display when NOT showing diff:
     const displayText = hasEdit ? finalStr : originalStr;
@@ -154,11 +205,17 @@ export default function EditableBullet({
             <div className="flex items-start gap-2">
                 <span className="text-gray-600 mt-1">•</span>
                 <div className="flex-1">
-                    {hasSuggestion && diffTokens ? (
-                        // Show word-level diff: inline changes with red strikethrough and green underline
+                    {hasSuggestion ? (
+                        // Show suggestion with diff if available, otherwise show plain suggested text
                         <div className="space-y-2">
                             <div className="leading-relaxed">
-                                {renderWordDiff(diffTokens)}
+                                {diffTokens && Array.isArray(diffTokens) && diffTokens.length > 0 ? (
+                                    <div className="word-diff-container">
+                                        {renderWordDiff(diffTokens)}
+                                    </div>
+                                ) : (
+                                    <span className="text-gray-900">{suggestedStr}</span>
+                                )}
                             </div>
                             <div className="flex gap-2 mt-2">
                                 <button

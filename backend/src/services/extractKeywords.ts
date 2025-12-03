@@ -19,23 +19,15 @@ Extract keywords that are:
 4. **Action-oriented**: Verbs and phrases that indicate capabilities and achievements
 
 **Categorization Guidelines:**
-- Categorize keywords into BROAD, high-level skill categories that ATS systems commonly recognize
-- Use these general category types (adapt the exact names to be ATS-optimized but keep them broad):
-  - **Technical Skills**: Programming languages, software, platforms, frameworks, databases, APIs, tools, technologies
-  - **Hard Skills**: Specific competencies, methodologies, certifications, standards, protocols, processes, techniques
-  - **Soft Skills**: Communication, teamwork, problem-solving, leadership, collaboration, adaptability, interpersonal skills
-  - **Domain Expertise**: Industry-specific knowledge, business acumen, domain knowledge (if applicable)
-- Create 3-4 broad categories that encompass all relevant skills from the job description
-- Category names should be professional, commonly used in resumes, and ATS-recognized
-- Group related keywords together logically within these broad categories
-- Each category should contain 5-20 relevant keywords
+- Categorize keywords into the following types:
+  - **Technical Skills**: Programming languages, software, platforms, frameworks, databases, APIs, tools, technologies, etc
+  - **Hard Skills**: Specific competencies, methodologies, certifications, standards, protocols, processes, techniques, etc
+  - **Soft Skills**: Communication, teamwork, problem-solving, leadership, collaboration, adaptability, interpersonal skills,etc
 
-**Category Name Best Practices:**
-- Use broad, standard category names that ATS systems scan for (e.g., "Technical Skills", "Hard Skills", "Soft Skills")
-- You may add descriptive modifiers if needed (e.g., "Technical Skills & Tools", "Hard Skills & Certifications", "Soft Skills & Leadership")
-- Keep categories general enough to encompass multiple related skills
-- Use terms that appear frequently in resume section headers
-- Avoid overly specific category names like "Programming Languages" or "Cloud Platforms" - group these under broader categories
+- Group related keywords together logically within these 3 categories
+- Each category should contain 5-7 relevant keywords
+
+
 
 Return ONLY valid JSON in this exact format:
 {
@@ -70,7 +62,7 @@ Example output structure (use broad categories, adapt based on the job descripti
 }
 
 Important:
-- Use BROAD category names (Technical Skills, Hard Skills, Soft Skills, etc.) not specific ones (Programming Languages, Cloud Platforms, etc.)
+- Use these 3 broad category names (Technical Skills, Hard Skills, Soft Skills) not specific ones (Programming Languages, Cloud Platforms, etc.)
 - Extract 5-7 keywords per category based on what's most relevant it is not mandatory to have 5-7 keywords per category if there are no that many relevant keywords which are required
 - Prioritize keywords that appear multiple times or are emphasized in the job description
 - Include both exact terms and common variations/synonyms

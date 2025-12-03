@@ -92,6 +92,27 @@ export function ResumeWorkspace({ apiBaseUrl, token }: Props) {
     }
   }
 
+  async function handleDeleteResume(resumeId: string) {
+    if (!confirm('Are you sure you want to remove this resume?')) return;
+
+    try {
+      const res = await fetch(`${apiBaseUrl}/resumes/${resumeId}`, {
+        method: 'DELETE',
+        headers: authHeaders,
+      });
+
+      if (!res.ok) {
+        const json = await res.json();
+        throw new Error(json.error || 'Failed to delete resume');
+      }
+
+      // Remove from UI immediately
+      setResumes((prev) => prev.filter((r) => r.id !== resumeId));
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
   return (
     <div className="grid gap-8">
       <div>
@@ -155,13 +176,13 @@ export function ResumeWorkspace({ apiBaseUrl, token }: Props) {
                 key={resume.id}
                 className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 transition-all hover:border-indigo-200 hover:shadow-sm md:flex-row md:items-center md:justify-between"
               >
-                <div>
+                <div className="flex-1">
                   <div className="text-sm font-semibold text-gray-900">{resume.original_name}</div>
                   <div className="text-xs text-gray-500">
                     Uploaded {new Date(resume.created_at).toLocaleString()}
                   </div>
                 </div>
-                <div className="flex flex-col gap-2 md:flex-row">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center">
                   <button
                     onClick={() => navigate(`/ai-review/${resume.id}`)}
                     className="rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:scale-[1.02] hover:shadow-md"
@@ -173,6 +194,26 @@ export function ResumeWorkspace({ apiBaseUrl, token }: Props) {
                     className="rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-600 transition-all hover:border-purple-200 hover:bg-purple-50 hover:text-purple-700"
                   >
                     AI Tailor
+                  </button>
+                  <button
+                    onClick={() => handleDeleteResume(resume.id)}
+                    className="rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600 transition-all hover:border-red-300 hover:bg-red-50 hover:text-red-700"
+                    aria-label="Delete resume"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-4 w-4"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                      />
+                    </svg>
                   </button>
                 </div>
               </div>

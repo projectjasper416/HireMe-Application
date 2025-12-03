@@ -15,6 +15,7 @@ import {
     updateField,
     serializeToFinalUpdated,
     applyFinalUpdated,
+    mergeRegeneratedSuggestions,
 } from '../utils/structuredTailoringUtils';
 
 interface Job {
@@ -44,6 +45,7 @@ interface SectionState {
 }
 
 import { ResumeExportSidebar } from '../components/ResumeExportSidebar';
+import { JobSpecificScoreCard } from '../components/JobSpecificScoreCard';
 
 interface Props {
     apiBaseUrl: string;
@@ -81,6 +83,23 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
     const { resumeId } = useParams<{ resumeId: string }>();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
+
+    // Early return if resumeId is missing
+    if (!resumeId) {
+        return (
+            <div className="grid gap-6">
+                <div className="text-center py-12">
+                    <p className="text-lg text-gray-600">Resume ID not found. Please go back and select a resume.</p>
+                    <button
+                        onClick={() => navigate('/')}
+                        className="mt-4 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white"
+                    >
+                        Back to Dashboard
+                    </button>
+                </div>
+            </div>
+        );
+    }
     const [sections, setSections] = useState<SectionState[]>([]);
     const [jobs, setJobs] = useState<Job[]>([]);
     const [selectedJobId, setSelectedJobId] = useState<string>(searchParams.get('jobId') || '');
@@ -91,7 +110,10 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
     const [selectedTemplateName, setSelectedTemplateName] = useState<string>('Template');
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [showPreview, setShowPreview] = useState(false);
+    const [scoreRefreshTrigger, setScoreRefreshTrigger] = useState(0);
+    const scoreRecalcTimeoutRef = useRef<number | null>(null);
     const sectionRefs = useRef<Array<HTMLDivElement | null>>([]);
+    const regeneratedBulletsRef = useRef<Set<string>>(new Set()); // Track recently regenerated bullets
 
     const authHeaders = useMemo(
         () => ({
@@ -181,9 +203,45 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                                     }
                                 }
 
+                                // IMPORTANT: Merge regenerated suggestions from current state BEFORE applying final_updated
+                                // This ensures we know which bullets have been regenerated
+                                if (section.structuredTailoring && structuredTailoring) {
+                                    structuredTailoring = mergeRegeneratedSuggestions(
+                                        structuredTailoring,
+                                        section.structuredTailoring
+                                    );
+                                }
+
                                 // Apply saved final_updated values if they exist
+                                // applyFinalUpdated will preserve regenerated suggestions (suggested exists but final is null)
                                 if (structuredTailoring && match.final_updated) {
                                     structuredTailoring = applyFinalUpdated(structuredTailoring, match.final_updated);
+                                }
+
+                                // IMPORTANT: After applying final_updated, merge again to restore any regenerated suggestions
+                                // that might have been overwritten
+                                if (section.structuredTailoring && structuredTailoring) {
+                                    structuredTailoring = mergeRegeneratedSuggestions(
+                                        structuredTailoring,
+                                        section.structuredTailoring
+                                    );
+                                }
+                                
+                                // CRITICAL: Clear final for recently regenerated bullets
+                                // This ensures regenerated bullets show the word diff
+                                if (structuredTailoring && regeneratedBulletsRef.current.size > 0) {
+                                    structuredTailoring = {
+                                        ...structuredTailoring,
+                                        entries: structuredTailoring.entries.map(entry => ({
+                                            ...entry,
+                                            bullets: entry.bullets.map(bullet => {
+                                                if (regeneratedBulletsRef.current.has(bullet.id) && bullet.suggested) {
+                                                    return { ...bullet, final: null };
+                                                }
+                                                return bullet;
+                                            }),
+                                        })),
+                                    };
                                 }
 
                                 return {
@@ -255,6 +313,12 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                     return section;
                 })
             );
+            
+            // Score is automatically calculated on backend after tailoring completes
+            // Just trigger a refresh after a short delay to fetch the new score
+            setTimeout(() => {
+                setScoreRefreshTrigger(prev => prev + 1);
+            }, 2000);
         } catch (err: any) {
             setError(err.message);
         } finally {
@@ -282,6 +346,9 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
 
             const json = await res.json();
 
+            // Track this bullet as recently regenerated
+            regeneratedBulletsRef.current.add(bulletId);
+            
             // Update the section with new suggestion
             setSections((prev) =>
                 prev.map((section, idx) => {
@@ -296,6 +363,11 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                     };
                 })
             );
+            
+            // Clear the regenerated bullet tracking after a short delay
+            setTimeout(() => {
+                regeneratedBulletsRef.current.delete(bulletId);
+            }, 1000);
         } catch (err: any) {
             setError(err.message);
         }
@@ -433,6 +505,26 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                 headers: authHeaders,
                 body: JSON.stringify({ finalUpdated }),
             });
+
+            // Debounced score recalculation - clear previous timeout and set new one
+            if (scoreRecalcTimeoutRef.current) {
+                clearTimeout(scoreRecalcTimeoutRef.current);
+            }
+            
+            scoreRecalcTimeoutRef.current = setTimeout(async () => {
+                try {
+                    await fetch(`${apiBaseUrl}/resumes/${resumeId}/calculate-score?jobId=${selectedJobId}`, {
+                        method: 'POST',
+                        headers: authHeaders,
+                    });
+                    // Small delay before refresh to ensure DB write completes
+                    setTimeout(() => {
+                        setScoreRefreshTrigger(prev => prev + 1);
+                    }, 500);
+                } catch (err) {
+                    console.error('Failed to recalculate score:', err);
+                }
+            }, 3000); // Wait 3 seconds after last change before recalculating
         } catch (err) {
             console.error('Failed to auto-save:', err);
         }
@@ -548,7 +640,12 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                             </div>
                         ) : (
                             <div className="grid gap-6">
-                                {sections.map((section, index) => (
+                                {sections.length === 0 ? (
+                                    <div className="text-center py-12 text-gray-500">
+                                        <p>Loading sections...</p>
+                                    </div>
+                                ) : (
+                                    sections.map((section, index) => (
                                     <section key={section.heading} className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
                                         <header className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                                             <div>
@@ -580,12 +677,23 @@ export function AITailorPage({ apiBaseUrl, token }: Props) {
                                             )}
                                         </div>
                                     </section>
-                                ))}
+                                    ))
+                                )}
                             </div>
                         )}
                     </div>
 
-                    <div className="lg:col-span-1">
+                    <div className="lg:col-span-1 space-y-6">
+                        {selectedJobId && (
+                            <JobSpecificScoreCard
+                                key={`${selectedJobId}-${scoreRefreshTrigger}`}
+                                apiBaseUrl={apiBaseUrl}
+                                token={token}
+                                resumeId={resumeId}
+                                jobId={selectedJobId}
+                                refreshTrigger={scoreRefreshTrigger}
+                            />
+                        )}
                         <ResumeExportSidebar
                             apiBaseUrl={apiBaseUrl}
                             token={token}

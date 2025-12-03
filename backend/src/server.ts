@@ -7,6 +7,7 @@ import { resumeRouter } from './routes/resumes';
 import { templateRouter } from './routes/templates';
 import { jobsRouter } from './routes/jobs';
 
+
 const app = express();
 
 const bodyLimit = process.env.BODY_LIMIT || '10mb';
@@ -39,6 +40,7 @@ app.use('/auth', authRouter);
 app.use('/resumes', resumeRouter);
 app.use('/templates', templateRouter);
 app.use('/jobs', jobsRouter);
+
 
 const port = Number(process.env.PORT || 4000);
 app.listen(port, () => {

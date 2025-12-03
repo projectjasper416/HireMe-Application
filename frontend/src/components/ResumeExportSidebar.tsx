@@ -202,14 +202,14 @@ export function ResumeExportSidebar({
             <div className="mt-6 flex flex-col gap-3">
                 <button
                     onClick={handlePreview}
-                    disabled={!selectedTemplate || previewing}
+                    disabled={!selectedTemplate || previewing || downloading}
                     className="w-full rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 px-4 py-3 text-sm font-medium text-white shadow-sm transition-all hover:scale-[1.02] hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60"
                 >
                     {previewing ? 'Generating Preview…' : 'Preview PDF'}
                 </button>
                 <button
                     onClick={handleDownload}
-                    disabled={!selectedTemplate || downloading}
+                    disabled={!selectedTemplate || downloading || previewing}
                     className="w-full rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 px-4 py-3 text-sm font-medium text-white shadow-sm transition-all hover:scale-[1.02] hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60"
                 >
                     {downloading ? 'Preparing…' : 'Download PDF'}

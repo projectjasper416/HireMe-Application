@@ -11,7 +11,7 @@ export function AppHeader({ profile, onLogout }: AppHeaderProps) {
   return (
     <div className="mb-8 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm md:flex-row md:items-center md:justify-between">
       <div>
-        <h1 className="text-4xl font-bold">Welcome back</h1>
+        <h1 className="text-4xl font-bold">Welcome Back</h1>
         <p className="text-base text-gray-600">
           {profile?.email || 'Authenticated'} · Role: {profile?.role || 'user'}
         </p>

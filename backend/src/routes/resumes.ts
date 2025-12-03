@@ -413,6 +413,81 @@ resumeRouter.post('/:resumeId/review', async (req: AuthenticatedRequest, res) =>
     if (upsertError) {
       return res.status(400).json({ error: upsertError.message });
     }
+
+    // Calculate generic resume score after review completes (async, don't block response)
+    // This will create or update the score record
+    (async () => {
+      try {
+        const { calculateGenericResumeScore } = await import('../services/genericResumeScore');
+        
+        const { data: resumeData } = await supabaseAdmin
+          .from('resumes')
+          .select('*')
+          .eq('id', resumeId)
+          .single();
+
+        if (resumeData) {
+          // Fetch latest final_updated data
+          const { data: reviews } = await supabaseAdmin
+            .from('resume_ai_reviews')
+            .select('section_name, final_updated')
+            .eq('resume_id', resumeId);
+
+          const finalUpdatedBySection: Record<string, any> = {};
+          reviews?.forEach(r => {
+            if (r.final_updated !== null && r.final_updated !== undefined) {
+              finalUpdatedBySection[r.section_name] = r.final_updated;
+            }
+          });
+
+          const score = await calculateGenericResumeScore(resumeData, finalUpdatedBySection);
+
+          // Upsert score - update existing or create new
+          let existingScoreQuery = supabaseAdmin
+            .from('resume_scores')
+            .select('id')
+            .eq('resume_id', resumeId)
+            .eq('score_type', 'generic')
+            .is('job_id', null);
+
+          const { data: existingRecord } = await existingScoreQuery.maybeSingle();
+
+          if (existingRecord) {
+            // Update existing record
+            await supabaseAdmin
+              .from('resume_scores')
+              .update({
+                overall_score: score.overallScore,
+                score_breakdown: score.breakdown,
+                suggestions: score.suggestions,
+                improvement_areas: score.improvementAreas,
+                keyword_coverage: null,
+                comparison_score: null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', existingRecord.id);
+          } else {
+            // Insert new record
+            await supabaseAdmin
+              .from('resume_scores')
+              .insert({
+                resume_id: resumeId,
+                job_id: null,
+                score_type: 'generic',
+                overall_score: score.overallScore,
+                score_breakdown: score.breakdown,
+                suggestions: score.suggestions,
+                improvement_areas: score.improvementAreas,
+                keyword_coverage: null,
+                comparison_score: null,
+              });
+          }
+        }
+      } catch (err) {
+        console.error('Background score calculation failed:', err);
+        // Don't fail the review request if score calculation fails
+      }
+    })();
   }
 
   return res.json({ reviews: results });
@@ -534,6 +609,107 @@ resumeRouter.post('/:resumeId/tailor', async (req: AuthenticatedRequest, res) =>
 
     if (insertError) {
       return res.status(400).json({ error: insertError.message });
+    }
+
+    // Calculate job-specific ATS score after tailoring completes (async, don't block response)
+    // Only if jobId exists (job-specific tailoring)
+    if (jobId) {
+      (async () => {
+        try {
+          const { calculateJobSpecificATSScore } = await import('../services/jobSpecificATSScore');
+          
+          const { data: resumeData } = await supabaseAdmin
+            .from('resumes')
+            .select('*')
+            .eq('id', resumeId)
+            .single();
+
+          const { data: job } = await supabaseAdmin
+            .from('jobs')
+            .select('*')
+            .eq('id', jobId)
+            .eq('user_id', req.user!.id)
+            .maybeSingle();
+
+          if (resumeData && job && job.job_description && job.keywords) {
+            // Check if baseline score exists (first time tailoring)
+            const { data: existingScore } = await supabaseAdmin
+              .from('resume_scores')
+              .select('comparison_score, overall_score')
+              .eq('resume_id', resumeId)
+              .eq('job_id', jobId)
+              .eq('score_type', 'job_specific')
+              .maybeSingle();
+
+            const baselineScore = existingScore?.comparison_score;
+
+            const { data: tailorings } = await supabaseAdmin
+              .from('resume_ai_tailorings')
+              .select('section_name, final_updated')
+              .eq('resume_id', resumeId)
+              .eq('job_id', jobId);
+
+            const finalUpdatedBySection: Record<string, any> = {};
+            tailorings?.forEach(t => {
+              if (t.final_updated !== null && t.final_updated !== undefined) {
+                finalUpdatedBySection[t.section_name] = t.final_updated;
+              }
+            });
+
+            const score = await calculateJobSpecificATSScore(
+              resumeData,
+              job.job_description,
+              job.keywords as any,
+              finalUpdatedBySection,
+              baselineScore
+            );
+
+            // Upsert score - update existing or create new
+            let existingScoreQuery = supabaseAdmin
+              .from('resume_scores')
+              .select('id')
+              .eq('resume_id', resumeId)
+              .eq('job_id', jobId)
+              .eq('score_type', 'job_specific');
+
+            const { data: existingRecord } = await existingScoreQuery.maybeSingle();
+
+            if (existingRecord) {
+              // Update existing record - always update all fields
+              await supabaseAdmin
+                .from('resume_scores')
+                .update({
+                  overall_score: score.overallScore,
+                  score_breakdown: score.breakdown,
+                  suggestions: score.suggestions,
+                  improvement_areas: score.improvementAreas,
+                  keyword_coverage: score.keywordCoverage,
+                  comparison_score: baselineScore !== undefined ? baselineScore : score.overallScore,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', existingRecord.id);
+            } else {
+              // Insert new record with baseline as comparison
+              await supabaseAdmin
+                .from('resume_scores')
+                .insert({
+                  resume_id: resumeId,
+                  job_id: jobId,
+                  score_type: 'job_specific',
+                  overall_score: score.overallScore,
+                  score_breakdown: score.breakdown,
+                  suggestions: score.suggestions,
+                  improvement_areas: score.improvementAreas,
+                  keyword_coverage: score.keywordCoverage,
+                  comparison_score: score.overallScore, // First score is the baseline
+                });
+            }
+          }
+        } catch (err) {
+          console.error('Background score calculation failed:', err);
+          // Don't fail the tailor request if score calculation fails
+        }
+      })();
     }
   }
 
@@ -717,7 +893,8 @@ resumeRouter.post('/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-stru
       .update({ final_updated: finalUpdated })
       .eq('resume_id', resumeId)
       .eq('job_id', jobId)
-      .eq('section_name', sectionHeading);
+      .eq('section_name', sectionHeading)
+      .select(); // Select to ensure the update is committed
 
     if (updateError) return res.status(400).json({ error: updateError.message });
   } else {
@@ -857,7 +1034,8 @@ resumeRouter.post('/:resumeId/sections/:sectionIndex/save-structured', async (re
       .from('resume_ai_reviews')
       .update({ final_updated: finalUpdated })
       .eq('resume_id', resumeId)
-      .eq('section_name', sectionHeading);
+      .eq('section_name', sectionHeading)
+      .select(); // Select to ensure the update is committed
 
     if (updateError) return res.status(400).json({ error: updateError.message });
   } else {
@@ -915,14 +1093,313 @@ resumeRouter.post('/:resumeId/sections/:sectionIndex/regenerate-bullet', async (
   }
 });
 
+// GET /:resumeId/score - Get resume score (generic or job-specific)
+// Query param: ?jobId=xxx for job-specific score
+resumeRouter.get('/:resumeId/score', async (req: AuthenticatedRequest, res) => {
+  const { resumeId } = req.params;
+  const jobId = req.query.jobId as string | undefined;
+  const scoreType = jobId ? 'job_specific' : 'generic';
+
+  // Verify resume ownership
+  const { data: resume, error: resumeError } = await supabaseAdmin
+    .from('resumes')
+    .select('*')
+    .eq('id', resumeId)
+    .eq('user_id', req.user!.id)
+    .maybeSingle();
+
+  if (resumeError || !resume) {
+    return res.status(404).json({ error: 'Resume not found' });
+  }
+
+  // Check for existing score - handle NULL job_id correctly
+  let existingScoreQuery = supabaseAdmin
+    .from('resume_scores')
+    .select('*')
+    .eq('resume_id', resumeId)
+    .eq('score_type', scoreType);
+
+  // For NULL job_id (generic scores), use .is() instead of .eq()
+  if (jobId) {
+    existingScoreQuery = existingScoreQuery.eq('job_id', jobId);
+  } else {
+    existingScoreQuery = existingScoreQuery.is('job_id', null);
+  }
+
+  const { data: existingScore, error: fetchError } = await existingScoreQuery.maybeSingle();
+
+  if (fetchError) {
+    console.error('Error fetching existing score:', fetchError);
+  }
+
+  // Only return existing score - do NOT calculate automatically
+  // Calculation should only happen via POST /calculate-score endpoint
+  if (existingScore) {
+    return res.json({ score: existingScore });
+  }
+
+  // No score exists - return 404 instead of calculating
+  return res.status(404).json({ 
+    error: 'Score not found. Please calculate the score first using POST /calculate-score',
+    score: null
+  });
+});
+
+// POST /:resumeId/calculate-score - Force recalculation and update score
+// Query param: ?jobId=xxx for job-specific score
+resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest, res) => {
+  const { resumeId } = req.params;
+  const jobId = req.query.jobId as string | undefined;
+  const scoreType = jobId ? 'job_specific' : 'generic';
+
+  // Verify resume ownership
+  const { data: resume, error: resumeError } = await supabaseAdmin
+    .from('resumes')
+    .select('*')
+    .eq('id', resumeId)
+    .eq('user_id', req.user!.id)
+    .maybeSingle();
+
+  if (resumeError || !resume) {
+    return res.status(404).json({ error: 'Resume not found' });
+  }
+
+  try {
+    const { calculateGenericResumeScore } = await import('../services/genericResumeScore');
+    const { calculateJobSpecificATSScore } = await import('../services/jobSpecificATSScore');
+
+    let scoreData: any;
+
+    if (jobId) {
+      // Job-specific score
+      const { data: job } = await supabaseAdmin
+        .from('jobs')
+        .select('*')
+        .eq('id', jobId)
+        .eq('user_id', req.user!.id)
+        .maybeSingle();
+
+      if (!job || !job.job_description) {
+        return res.status(404).json({ error: 'Job not found or missing job description' });
+      }
+
+      if (!job.keywords) {
+        return res.status(400).json({ error: 'Job keywords not extracted. Please extract keywords first.' });
+      }
+
+      // Get existing baseline score (only if score already exists)
+      const { data: existingScore } = await supabaseAdmin
+        .from('resume_scores')
+        .select('comparison_score, overall_score')
+        .eq('resume_id', resumeId)
+        .eq('job_id', jobId)
+        .eq('score_type', 'job_specific')
+        .maybeSingle();
+
+      // Preserve existing comparison_score as baseline (original score before any changes)
+      // If no baseline exists yet, current score will become the baseline
+      const baselineScore = existingScore?.comparison_score;
+
+      // Fetch latest final_updated from resume_ai_tailorings
+      // Use a small delay to ensure any pending writes are committed
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      const { data: tailorings, error: tailoringsError } = await supabaseAdmin
+        .from('resume_ai_tailorings')
+        .select('section_name, final_updated')
+        .eq('resume_id', resumeId)
+        .eq('job_id', jobId);
+
+      if (tailoringsError) {
+        console.error('Error fetching final_updated for score calculation:', tailoringsError);
+      }
+
+      const finalUpdatedBySection: Record<string, any> = {};
+      tailorings?.forEach(t => {
+        // Include final_updated even if it's null (to distinguish from missing sections)
+        if (t.final_updated !== null && t.final_updated !== undefined) {
+          finalUpdatedBySection[t.section_name] = t.final_updated;
+        }
+      });
+
+      //console.log(`[Score Calculation] Using final_updated for ${Object.keys(finalUpdatedBySection).length} sections:`, Object.keys(finalUpdatedBySection));
+
+      const score = await calculateJobSpecificATSScore(
+        resume,
+        job.job_description,
+        job.keywords as any,
+        finalUpdatedBySection,
+        baselineScore
+      );
+
+      scoreData = {
+        resume_id: resumeId,
+        job_id: jobId,
+        score_type: 'job_specific',
+        overall_score: score.overallScore,
+        score_breakdown: score.breakdown,
+        suggestions: score.suggestions,
+        improvement_areas: score.improvementAreas,
+        keyword_coverage: score.keywordCoverage,
+        comparison_score: baselineScore !== undefined && baselineScore !== null ? baselineScore : score.overallScore, // Preserve baseline or set current as baseline
+      };
+    } else {
+      // Generic score - fetch latest final_updated data from database
+      // Use a small delay to ensure any pending writes are committed
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      const { data: reviews, error: reviewsError } = await supabaseAdmin
+        .from('resume_ai_reviews')
+        .select('section_name, final_updated')
+        .eq('resume_id', resumeId);
+
+      if (reviewsError) {
+        console.error('Error fetching final_updated for score calculation:', reviewsError);
+      }
+
+      const finalUpdatedBySection: Record<string, any> = {};
+      reviews?.forEach(r => {
+        // Include final_updated even if it's null (to distinguish from missing sections)
+        // The calculation functions will handle null appropriately
+        if (r.final_updated !== null && r.final_updated !== undefined) {
+          finalUpdatedBySection[r.section_name] = r.final_updated;
+        }
+      });
+
+      //console.log(`[Score Calculation] Using final_updated for ${Object.keys(finalUpdatedBySection).length} sections:`, Object.keys(finalUpdatedBySection));
+
+      const score = await calculateGenericResumeScore(resume, finalUpdatedBySection);
+
+      scoreData = {
+        resume_id: resumeId,
+        job_id: null,
+        score_type: 'generic',
+        overall_score: score.overallScore,
+        score_breakdown: score.breakdown,
+        suggestions: score.suggestions,
+        improvement_areas: score.improvementAreas,
+        keyword_coverage: null,
+        comparison_score: null,
+      };
+    }
+
+    // Use atomic UPSERT to prevent race conditions and duplicates
+    // First check if record exists to handle NULL job_id correctly
+    let existingScoreQuery = supabaseAdmin
+      .from('resume_scores')
+      .select('id')
+      .eq('resume_id', resumeId)
+      .eq('score_type', scoreType);
+
+    if (jobId) {
+      existingScoreQuery = existingScoreQuery.eq('job_id', jobId);
+    } else {
+      existingScoreQuery = existingScoreQuery.is('job_id', null);
+    }
+
+    const { data: existingRecord } = await existingScoreQuery.maybeSingle();
+
+    let storedScore: any;
+    if (existingRecord) {
+      // Always update existing record with all fields (even if score didn't change)
+      // This ensures suggestions, improvement_areas, keyword_coverage are always fresh
+      const { data: updatedScore, error: updateError } = await supabaseAdmin
+        .from('resume_scores')
+        .update({
+          overall_score: scoreData.overall_score,
+          score_breakdown: scoreData.score_breakdown,
+          suggestions: scoreData.suggestions,
+          improvement_areas: scoreData.improvement_areas,
+          keyword_coverage: scoreData.keyword_coverage,
+          comparison_score: scoreData.comparison_score,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingRecord.id)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error('Error updating score:', updateError);
+        return res.status(500).json({
+          error: 'Failed to update score',
+          detail: updateError.message,
+        });
+      }
+      storedScore = updatedScore;
+    } else {
+      // Insert new record (using insert to ensure atomicity)
+      const { data: insertedScore, error: insertError } = await supabaseAdmin
+        .from('resume_scores')
+        .insert({
+          ...scoreData,
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        // If duplicate key error, try to fetch existing record
+        if (insertError.code === '23505' || insertError.message?.includes('duplicate')) {
+          const { data: existingScore } = await existingScoreQuery.maybeSingle();
+          if (existingScore) {
+            // Return existing score instead of error
+            storedScore = existingScore;
+          } else {
+            console.error('Error inserting score (duplicate but not found):', insertError);
+            return res.status(500).json({
+              error: 'Failed to store score',
+              detail: insertError.message,
+            });
+          }
+        } else {
+          console.error('Error inserting score:', insertError);
+          return res.status(500).json({
+            error: 'Failed to store score',
+            detail: insertError.message,
+          });
+        }
+      } else {
+        storedScore = insertedScore;
+      }
+    }
+
+    return res.json({ score: storedScore });
+  } catch (err: any) {
+    console.error('Error calculating score:', err);
+    return res.status(500).json({
+      error: 'Failed to calculate score',
+      detail: err.message,
+    });
+  }
+});
+
 // List resumes
 resumeRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const { data, error } = await supabaseAdmin
     .from('resumes')
     .select('id, original_name, sections, created_at')
     .eq('user_id', req.user!.id)
+    .eq('removed_by_user', false)
     .order('created_at', { ascending: false });
 
   if (error) return res.status(400).json({ error: error.message });
   return res.json({ resumes: data });
+});
+
+// Soft delete resume: set removed_by_user to true
+resumeRouter.delete('/:resumeId', async (req: AuthenticatedRequest, res) => {
+  const { resumeId } = req.params;
+
+  const { data, error } = await supabaseAdmin
+    .from('resumes')
+    .update({ removed_by_user: true })
+    .eq('id', resumeId)
+    .eq('user_id', req.user!.id)
+    .select('id')
+    .maybeSingle();
+
+  if (error) return res.status(400).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Resume not found' });
+
+  return res.json({ success: true });
 });

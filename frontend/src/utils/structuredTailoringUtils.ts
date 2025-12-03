@@ -222,12 +222,29 @@ export function applyFinalUpdated(section: StructuredTailoringState, finalUpdate
             }
 
             // Apply saved bullet finals ONLY where they differ from original
+            // IMPORTANT: Don't overwrite bullets that have been regenerated (suggested exists but final is null)
             const savedBullets = savedEntry.bullets;
             const updatedBullets = entry.bullets.map((bullet, bulletIdx) => {
+                // CRITICAL: If bullet has a regenerated suggestion (suggested exists but final is null),
+                // preserve it and don't apply the saved final value
+                // Also check if suggested differs from original - if so, it's likely regenerated
+                if (bullet.suggested && 
+                    bullet.suggested.trim() !== '' &&
+                    bullet.suggested !== bullet.original &&
+                    (bullet.final === null || bullet.final === undefined)) {
+                    // This is a regenerated bullet - preserve it
+                    return {
+                        ...bullet,
+                        final: null, // Explicitly ensure final is null
+                        suggested: bullet.suggested, // Keep the regenerated suggestion
+                    };
+                }
+                
                 if (savedBullets && savedBullets[bulletIdx] !== undefined) {
                     const savedValue = savedBullets[bulletIdx];
                     // Only set final if the saved value is different from original
-                    if (savedValue !== bullet.original) {
+                    // AND the bullet doesn't have a regenerated suggestion
+                    if (savedValue !== bullet.original && !(bullet.suggested && bullet.final === null)) {
                         return {
                             ...bullet,
                             final: savedValue,
@@ -357,13 +374,22 @@ export function updateBullet(section: StructuredTailoringState, bulletId: string
 }
 
 export function updateBulletSuggestion(section: StructuredTailoringState, bulletId: string, suggested: string): StructuredTailoringState {
+    const cleanedSuggestion = stripMarkdown(suggested);
     return {
         ...section,
         entries: section.entries.map(entry => ({
             ...entry,
-            bullets: entry.bullets.map(b =>
-                b.id === bulletId ? { ...b, suggested: stripMarkdown(suggested) } : b
-            ),
+            bullets: entry.bullets.map(b => {
+                if (b.id === bulletId) {
+                    // When regenerating, set the new suggestion and explicitly clear final to null
+                    return {
+                        ...b,
+                        suggested: cleanedSuggestion,
+                        final: null, // Explicitly set to null to clear any previously accepted value
+                    };
+                }
+                return b;
+            }),
         })),
     };
 }
@@ -433,6 +459,60 @@ export function updateField(section: StructuredTailoringState, entryId: string, 
                         suggested: null,
                     },
                 },
+            };
+        }),
+    };
+}
+
+/**
+ * Merge regenerated suggestions from current state into parsed tailoring
+ * This preserves bullets that have been regenerated (suggested exists but final is null)
+ * IMPORTANT: This should be called AFTER applyFinalUpdated to ensure regenerated suggestions
+ * are not overwritten by database final_updated values
+ */
+export function mergeRegeneratedSuggestions(
+    parsedTailoring: StructuredTailoringState,
+    currentTailoring: StructuredTailoringState
+): StructuredTailoringState {
+    return {
+        ...parsedTailoring,
+        entries: parsedTailoring.entries.map((parsedEntry) => {
+            // Find matching entry in current state
+            const currentEntry = currentTailoring.entries.find(e => e.id === parsedEntry.id);
+            if (!currentEntry) return parsedEntry;
+
+            // Merge bullets: preserve regenerated suggestions from current state
+            const mergedBullets = parsedEntry.bullets.map((parsedBullet) => {
+                const currentBullet = currentEntry.bullets.find(b => b.id === parsedBullet.id);
+                if (!currentBullet) return parsedBullet;
+                
+                // If current bullet has a suggested value that differs from original, it's likely regenerated
+                // Preserve it by clearing final to ensure the suggestion is displayed
+                if (currentBullet.suggested && 
+                    currentBullet.suggested.trim() !== '' &&
+                    currentBullet.suggested !== currentBullet.original) {
+                    // Check if this suggestion is different from what's in the parsed bullet
+                    // If so, it means it was regenerated and we should preserve it
+                    const isDifferentFromParsed = 
+                        currentBullet.suggested !== parsedBullet.suggested &&
+                        currentBullet.suggested !== parsedBullet.final;
+                    
+                    // If final is null OR the suggestion differs from parsed, treat as regenerated
+                    if (currentBullet.final === null || isDifferentFromParsed) {
+                        // This bullet was regenerated - preserve it by clearing final and keeping suggested
+                        return {
+                            ...currentBullet,
+                            final: null, // Explicitly clear final to show the regenerated suggestion
+                            suggested: currentBullet.suggested, // Keep the regenerated suggestion
+                        };
+                    }
+                }
+                return parsedBullet;
+            });
+
+            return {
+                ...parsedEntry,
+                bullets: mergedBullets,
             };
         }),
     };

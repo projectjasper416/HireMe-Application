@@ -193,7 +193,7 @@ function parseRawBody(rawBody: unknown): { summary: string[]; entries: SectionEn
             else {
               // Special formatting for GPA
               if (key === 'gpa' || key === 'cgpa') {
-                metaParts.push(`GPA: ${valueStr}`);
+                metaParts.push(`${valueStr}`);
               } else {
                 metaParts.push(valueStr);
               }
