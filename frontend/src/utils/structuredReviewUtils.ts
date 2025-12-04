@@ -118,7 +118,7 @@ export function parseAISuggestions(ai_suggestions_html: string | null): Structur
                 }),
             };
 
-            console.log('[parseAISuggestions] Returning structured data:', result);
+            //console.log('[parseAISuggestions] Returning structured data:', result);
             return result;
         }
     } catch (e) {
