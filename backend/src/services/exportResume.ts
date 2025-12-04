@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
 import Handlebars from 'handlebars';
 import puppeteer from 'puppeteer';
+import { Logger } from '../utils/Logger';
 import type { ResumeSection } from '../types/resume';
 
 interface TemplateMeta {
@@ -159,7 +160,7 @@ function parseRawBody(rawBody: unknown): { summary: string[]; entries: SectionEn
       if (typeof item === 'object' && item !== null) {
         //console.log('[parseRawBody] Raw item:', JSON.stringify(item, null, 2));
         const entry: SectionEntryRenderable = { bullets: [] };
-        
+
         // Check if using new array structure format
         if (item.fields && Array.isArray(item.fields) && item.fieldOrder) {
           // New format: use fieldOrder to extract fields in EXACT order from user's resume
@@ -508,32 +509,59 @@ async function compileTemplate(templateId: string, data: ExportPayload): Promise
   const templatePath = path.join(TEMPLATE_ROOT, templateMeta.file);
   const rawTemplate = await readFile(templatePath, 'utf8');
   const template = Handlebars.compile(rawTemplate);
-  return template(data);
+  try {
+    return template(data);
+  } catch (error) {
+    await Logger.logError('ResumeExport', error, {
+      TransactionID: 'compile-template',
+      RelatedTo: templateId
+    });
+    throw error;
+  }
 }
 
 export async function renderResumePdf(
   sections: ResumeSection[],
   templateId: string
 ): Promise<Buffer> {
-  const payload = buildExportPayload(sections);
-  const html = await compileTemplate(templateId, payload);
-
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  await Logger.logInfo('ResumeExport', 'Starting resume PDF generation', {
+    TransactionID: 'render-pdf-start',
+    RelatedTo: templateId
   });
 
   try {
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdfBuffer = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: { top: '1cm', bottom: '1cm', left: '1.2cm', right: '1.2cm' },
+    const payload = buildExportPayload(sections);
+    const html = await compileTemplate(templateId, payload);
+
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
-    return pdfBuffer;
-  } finally {
-    await browser.close();
+
+    try {
+      const page = await browser.newPage();
+      await page.setContent(html, { waitUntil: 'networkidle0' });
+      const pdfBuffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: { top: '1cm', bottom: '1cm', left: '1.2cm', right: '1.2cm' },
+      });
+
+      await Logger.logInfo('ResumeExport', 'Resume PDF generated successfully', {
+        TransactionID: 'render-pdf-success',
+        RelatedTo: templateId
+      });
+
+      return pdfBuffer;
+    } finally {
+      await browser.close();
+    }
+  } catch (error) {
+    await Logger.logError('ResumeExport', error, {
+      TransactionID: 'render-pdf-error',
+      RelatedTo: templateId
+    });
+    throw error;
   }
 }
 
