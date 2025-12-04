@@ -114,9 +114,9 @@ resumeRouter.post('/', async (req: AuthenticatedRequest, res) => {
       detail,
     });
   }
-console.log('[resumes.ts] parsedSections:', JSON.stringify(parsedSections));
+  console.log('[resumes.ts] parsedSections:', JSON.stringify(parsedSections));
   const sanitizedSections = sanitizeSections(parsedSections);
-console.log('[resumes.ts] sanitizedSections:', JSON.stringify(sanitizedSections));
+  console.log('[resumes.ts] sanitizedSections:', JSON.stringify(sanitizedSections));
   const hasContactSection = sanitizedSections.some((section) =>
     section.heading.toLowerCase().includes('contact')
   );
@@ -146,7 +146,7 @@ console.log('[resumes.ts] sanitizedSections:', JSON.stringify(sanitizedSections)
     .map((section) => `${section.heading}\n${section.body}`)
     .join('\n\n');
   const resumeId = uuid();
-console.log('[resumes.ts] normalizedSections:', JSON.stringify(normalizedSections));
+  console.log('[resumes.ts] normalizedSections:', JSON.stringify(normalizedSections));
   const { error } = await supabaseAdmin.from('resumes').insert({
     id: resumeId,
     user_id: req.user!.id,
@@ -340,7 +340,7 @@ resumeRouter.post('/:resumeId/export', async (req: AuthenticatedRequest, res) =>
 
 
   try {
-    const pdfBuffer = await renderResumePdf(sections, templateId);
+    const pdfBuffer = await renderResumePdf(sections, templateId, req.user!.id);
     const safeName =
       typeof data.original_name === 'string'
         ? data.original_name.replace(/\.[^/.]+$/, '').replace(/[^\w\-]+/g, '_')
@@ -419,7 +419,7 @@ resumeRouter.post('/:resumeId/review', async (req: AuthenticatedRequest, res) =>
     (async () => {
       try {
         const { calculateGenericResumeScore } = await import('../services/genericResumeScore');
-        
+
         const { data: resumeData } = await supabaseAdmin
           .from('resumes')
           .select('*')
@@ -617,7 +617,7 @@ resumeRouter.post('/:resumeId/tailor', async (req: AuthenticatedRequest, res) =>
       (async () => {
         try {
           const { calculateJobSpecificATSScore } = await import('../services/jobSpecificATSScore');
-          
+
           const { data: resumeData } = await supabaseAdmin
             .from('resumes')
             .select('*')
@@ -1139,7 +1139,7 @@ resumeRouter.get('/:resumeId/score', async (req: AuthenticatedRequest, res) => {
   }
 
   // No score exists - return 404 instead of calculating
-  return res.status(404).json({ 
+  return res.status(404).json({
     error: 'Score not found. Please calculate the score first using POST /calculate-score',
     score: null
   });
@@ -1203,7 +1203,7 @@ resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest
       // Fetch latest final_updated from resume_ai_tailorings
       // Use a small delay to ensure any pending writes are committed
       await new Promise(resolve => setTimeout(resolve, 100));
-      
+
       const { data: tailorings, error: tailoringsError } = await supabaseAdmin
         .from('resume_ai_tailorings')
         .select('section_name, final_updated')
@@ -1247,7 +1247,7 @@ resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest
       // Generic score - fetch latest final_updated data from database
       // Use a small delay to ensure any pending writes are committed
       await new Promise(resolve => setTimeout(resolve, 100));
-      
+
       const { data: reviews, error: reviewsError } = await supabaseAdmin
         .from('resume_ai_reviews')
         .select('section_name, final_updated')

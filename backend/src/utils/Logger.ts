@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '../config/supabase';
 
 export interface LogEntry {
+    UserID?: string;
     SessionID?: string;
     TransactionID?: string;
     ParentTransactionID?: string;
@@ -21,6 +22,7 @@ export class Logger {
                 .from('Application_Log')
                 .insert([
                     {
+                        UserID: entry.UserID,
                         SessionID: entry.SessionID,
                         TransactionID: entry.TransactionID,
                         ParentTransactionID: entry.ParentTransactionID,

@@ -522,11 +522,13 @@ async function compileTemplate(templateId: string, data: ExportPayload): Promise
 
 export async function renderResumePdf(
   sections: ResumeSection[],
-  templateId: string
+  templateId: string,
+  userId: string
 ): Promise<Buffer> {
   await Logger.logInfo('ResumeExport', 'Starting resume PDF generation', {
     TransactionID: 'render-pdf-start',
-    RelatedTo: templateId
+    RelatedTo: templateId,
+    UserID: userId
   });
 
   try {
@@ -549,7 +551,8 @@ export async function renderResumePdf(
 
       await Logger.logInfo('ResumeExport', 'Resume PDF generated successfully', {
         TransactionID: 'render-pdf-success',
-        RelatedTo: templateId
+        RelatedTo: templateId,
+        UserID: userId
       });
 
       return pdfBuffer;
@@ -559,7 +562,8 @@ export async function renderResumePdf(
   } catch (error) {
     await Logger.logError('ResumeExport', error, {
       TransactionID: 'render-pdf-error',
-      RelatedTo: templateId
+      RelatedTo: templateId,
+      UserID: userId
     });
     throw error;
   }
