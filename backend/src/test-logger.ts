@@ -17,7 +17,7 @@ async function testLogger() {
     try {
         throw new Error('Test error exception');
     } catch (err) {
-        await Logger.logError('TestCategory', err, {
+        await Logger.logBackendError('TestCategory', err, {
             TransactionID: 'tx-456',
             Endpoint: '/test-error',
         });

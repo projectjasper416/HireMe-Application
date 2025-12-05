@@ -6,6 +6,8 @@
 
 import { rawBodyToText } from './rawBodyToText';
 import type { ResumeRecord, ResumeSection } from '../types/resume';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 
 /**
  * Extract text from final_updated structure (array format with fieldOrder, fields, bullets)
@@ -51,6 +53,19 @@ function extractFromFinalUpdated(finalUpdated: any): string {
   // Handle string format
   if (typeof finalUpdated === 'string') {
     return finalUpdated;
+  }
+
+  // Log unexpected type (not null/undefined, not array, not object, not string)
+  if (finalUpdated !== null && finalUpdated !== undefined) {
+    const transactionId = `extract-final-updated-${uuid()}`;
+    Logger.logBackendError('ResumeTextExtractor', new Error('Unexpected final_updated type in extractFromFinalUpdated'), {
+      TransactionID: transactionId,
+      Endpoint: 'extractFromFinalUpdated',
+      Status: 'DATA_ERROR',
+      Exception: `Unexpected type: ${typeof finalUpdated}`
+    }).catch(() => {
+      // Ignore logging errors
+    });
   }
 
   return '';
@@ -229,6 +244,18 @@ export function extractStructuredEntries(
       }
 
       entries.push({ fields, bullets });
+    });
+  }
+  // Log unexpected structure (not array, not object with entries, but has data)
+  else if (data !== null && data !== undefined) {
+    const transactionId = `extract-structured-entries-${uuid()}`;
+    Logger.logBackendError('ResumeTextExtractor', new Error('Unexpected data structure in extractStructuredEntries'), {
+      TransactionID: transactionId,
+      Endpoint: 'extractStructuredEntries',
+      Status: 'DATA_ERROR',
+      Exception: `Unexpected structure type: ${typeof data}, isArray: ${Array.isArray(data)}, hasEntries: ${typeof data === 'object' && 'entries' in data}`
+    }).catch(() => {
+      // Ignore logging errors
     });
   }
 

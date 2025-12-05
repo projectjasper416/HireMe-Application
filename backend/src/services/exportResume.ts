@@ -190,14 +190,9 @@ function parseRawBody(rawBody: unknown): { summary: string[]; entries: SectionEn
               entry.secondary = valueStr;
               secondarySet = true;
             }
-            // All remaining fields go to meta in order
+            // All remaining fields go to meta in order (preserving fieldOrder sequence)
             else {
-              // Special formatting for GPA
-              if (key === 'gpa' || key === 'cgpa') {
-                metaParts.push(`${valueStr}`);
-              } else {
-                metaParts.push(valueStr);
-              }
+              metaParts.push(valueStr);
             }
           }
 
@@ -212,11 +207,9 @@ function parseRawBody(rawBody: unknown): { summary: string[]; entries: SectionEn
           }
         } else {
           // Legacy format: extract fields from object
+          // Note: Legacy format doesn't have fieldOrder, so we use fallback field detection
+          // When fieldOrder is available (new format above), it preserves exact visual order from user's resume
           const obj = item as Record<string, unknown>;
-
-          // Extract fields in CORRECT VISUAL ORDER
-          // For Experience: company, title, dates, location
-          // For Education: institution, degree, dates, location, gpa
 
           // Primary field (company, institution, project name, etc.)
           if (obj.company) {
@@ -238,17 +231,43 @@ function parseRawBody(rawBody: unknown): { summary: string[]; entries: SectionEn
             entry.secondary = String(obj.secondary);
           }
 
-          // Meta field (dates, location, gpa combined)
+          // Meta field - preserve order if fieldOrder exists, otherwise use fallback order
           const metaParts: string[] = [];
-          if (obj.dates || obj.date || obj.graduationDate) {
-            metaParts.push(String(obj.dates || obj.date || obj.graduationDate));
+          if (obj.fieldOrder && Array.isArray(obj.fieldOrder)) {
+            // If fieldOrder exists in legacy format, use it to preserve visual order
+            const fieldMap = new Map<string, any>();
+            for (const [key, value] of Object.entries(obj)) {
+              if (key !== 'fieldOrder' && key !== 'bullets' && key !== 'primary' && key !== 'secondary') {
+                fieldMap.set(key, value);
+              }
+            }
+            
+            // Process fields in fieldOrder sequence, skipping already-used fields
+            for (const key of obj.fieldOrder) {
+              if (key === 'bullets' || key === 'primary' || key === 'secondary') continue;
+              const value = fieldMap.get(key);
+              if (value !== undefined && value !== null) {
+                const valueStr = String(value);
+                if (key === 'gpa' || key === 'cgpa') {
+                  metaParts.push(valueStr);
+                } else {
+                  metaParts.push(valueStr);
+                }
+              }
+            }
+          } else {
+            // Fallback: use common field order when fieldOrder is not available
+            if (obj.dates || obj.date || obj.graduationDate) {
+              metaParts.push(String(obj.dates || obj.date || obj.graduationDate));
+            }
+            if (obj.location) {
+              metaParts.push(String(obj.location));
+            }
+            if (obj.gpa || obj.cgpa) {
+              metaParts.push(String(obj.gpa || obj.cgpa));
+            }
           }
-          if (obj.location) {
-            metaParts.push(String(obj.location));
-          }
-          if (obj.gpa || obj.cgpa) {
-            metaParts.push(`GPA: ${obj.gpa || obj.cgpa}`);
-          }
+          
           if (metaParts.length > 0) {
             entry.meta = metaParts.join(' | ');
           }
@@ -512,8 +531,9 @@ async function compileTemplate(templateId: string, data: ExportPayload): Promise
   try {
     return template(data);
   } catch (error) {
-    await Logger.logError('ResumeExport', error, {
+    await Logger.logBackendError('ResumeExport', error, {
       TransactionID: 'compile-template',
+      Endpoint: 'compileTemplate',
       RelatedTo: templateId
     });
     throw error;
@@ -525,12 +545,7 @@ export async function renderResumePdf(
   templateId: string,
   userId: string
 ): Promise<Buffer> {
-  await Logger.logInfo('ResumeExport', 'Starting resume PDF generation', {
-    TransactionID: 'render-pdf-start',
-    RelatedTo: templateId,
-    UserID: userId
-  });
-
+  
   try {
     const payload = buildExportPayload(sections);
     const html = await compileTemplate(templateId, payload);
@@ -560,8 +575,9 @@ export async function renderResumePdf(
       await browser.close();
     }
   } catch (error) {
-    await Logger.logError('ResumeExport', error, {
+    await Logger.logBackendError('ResumeExport', error, {
       TransactionID: 'render-pdf-error',
+      Endpoint: 'renderResumePdf',
       RelatedTo: templateId,
       UserID: userId
     });

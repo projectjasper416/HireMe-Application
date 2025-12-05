@@ -1,6 +1,8 @@
 import fetch from 'node-fetch';
 import { v4 as uuidv4 } from 'uuid';
 import { detectLLMProvider, buildLLMHeaders, buildLLMRequestBody, parseLLMResponse } from './llmProvider';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 
 interface TailorArgs {
     sectionName: string;
@@ -105,13 +107,22 @@ export async function tailorSectionStructured({
     jobDescription,
     keywords
 }: StructuredTailorArgs): Promise<StructuredTailorResponse> {
-    const apiUrl = process.env.LLM_TAILOR_API_URL || process.env.LLM_REVIEW_API_URL;
-    const apiKey = process.env.LLM_TAILOR_API_KEY || process.env.LLM_REVIEW_API_KEY;
-    const model = process.env.LLM_TAILOR_MODEL || process.env.LLM_REVIEW_MODEL;
+    const transactionId = `tailor-section-${uuid()}`;
+    try {
+        const apiUrl = process.env.LLM_TAILOR_API_URL || process.env.LLM_REVIEW_API_URL;
+        const apiKey = process.env.LLM_TAILOR_API_KEY || process.env.LLM_REVIEW_API_KEY;
+        const model = process.env.LLM_TAILOR_MODEL || process.env.LLM_REVIEW_MODEL;
 
-    if (!apiUrl || !apiKey) {
-        throw new Error('LLM tailor configuration missing');
-    }
+       
+        if (!apiUrl || !apiKey) {
+            const error = new Error('LLM tailor configuration missing');
+            await Logger.logBackendError('TailorLLM', error, {
+                TransactionID: transactionId,
+                Endpoint: 'tailorSectionStructured',
+                Status: 'CONFIG_ERROR'
+            });
+            throw error;
+        }
 
     const sectionLower = sectionName.toLowerCase();
     let sectionType: 'summary' | 'experience' | 'education' | 'skills' | 'other' = 'other';
@@ -155,23 +166,44 @@ Return ONLY valid JSON in the universal format.`;
 //console.log('[tailorSectionStructured] Response:', response);
     const raw = await response.text();
 
-    if (!response.ok) {
-        throw new Error(`Tailor LLM failed with status ${response.status}: ${raw}`);
-    }
+        if (!response.ok) {
+            const error = new Error(`Tailor LLM failed with status ${response.status}`);
+            await Logger.logBackendError('TailorLLM', error, {
+                TransactionID: transactionId,
+                Endpoint: 'tailorSectionStructured',
+                Status: 'LLM_ERROR',
+                Exception: raw.substring(0, 500)
+            });
+            throw error;
+        }
 
     try {
         let jsonResponse;
         try {
             jsonResponse = JSON.parse(raw);
         } catch (e) {
-            throw new Error(`Failed to parse LLM response body as JSON: ${raw}`);
+            const error = new Error(`Failed to parse LLM response body as JSON`);
+            await Logger.logBackendError('TailorLLM', e as Error, {
+                TransactionID: transactionId,
+                Endpoint: 'tailorSectionStructured',
+                Status: 'PARSE_ERROR',
+                Exception: raw.substring(0, 500)
+            });
+            throw error;
         }
 
         const content = parseLLMResponse(provider, jsonResponse);
         //console.log('[tailorSectionStructured] Raw content from LLM:', content); // Debug log
 
         if (!content) {
-            throw new Error('Empty content from LLM');
+            const error = new Error('Empty content from LLM');
+            await Logger.logBackendError('TailorLLM', error, {
+                TransactionID: transactionId,
+                Endpoint: 'tailorSectionStructured',
+                Status: 'LLM_ERROR',
+                Exception: 'Empty content from LLM'
+            });
+            throw error;
         }
 
         // Try to extract JSON from markdown code blocks first
@@ -190,18 +222,32 @@ Return ONLY valid JSON in the universal format.`;
             try {
                 parsed = JSON.parse(content);
             } catch (e) {
-                throw new Error(`Failed to parse JSON content: ${content}`);
+                const error = new Error(`Failed to parse JSON content`);
+                await Logger.logBackendError('TailorLLM', e as Error, {
+                    TransactionID: transactionId,
+                    Endpoint: 'tailorSectionStructured',
+                    Status: 'PARSE_ERROR',
+                    Exception: content.substring(0, 500)
+                });
+                throw error;
             }
         }
 
         // Handle full object format with type and entries
         if (parsed.type && parsed.entries) {
+            await Logger.logInfo('TailorLLM', 'Section tailored successfully', {
+                TransactionID: transactionId,
+                Endpoint: 'tailorSectionStructured',
+                Status: 'SUCCESS',
+                RelatedTo: sectionName,
+                ResponsePayload: { entriesCount: parsed.entries.length }
+            });
             return normalizeStructuredTailoring(sectionName, sectionType, parsed, rawBody);
         }
 
         // Handle array format (LLM returned entries array directly)
         if (Array.isArray(parsed)) {
-            console.log('[tailorSectionStructured] LLM returned array directly, wrapping in object format');
+
             return normalizeStructuredTailoring(sectionName, sectionType, {
                 sectionName,
                 type: sectionType,
@@ -209,12 +255,29 @@ Return ONLY valid JSON in the universal format.`;
             }, rawBody);
         }
 
-        throw new Error('Invalid structured response format');
-    } catch (parseError) {
-        console.error('[tailorSectionStructured] Parse error:', parseError);
-        console.error('[tailorSectionStructured] Raw response was:', raw); // Log original raw response
-        throw parseError; // Re-throw error instead of using fallback
-        // return generateFallbackStructuredTailoring(sectionName, sectionType, rawBody);
+        const error = new Error('Invalid structured response format');
+        await Logger.logBackendError('TailorLLM', error, {
+            TransactionID: transactionId,
+            Endpoint: 'tailorSectionStructured',
+            Status: 'PARSE_ERROR',
+            Exception: raw.substring(0, 500)
+        });
+        throw error;
+    } catch (error) {
+        await Logger.logBackendError('TailorLLM', error, {
+            TransactionID: transactionId,
+            Endpoint: 'tailorSectionStructured',
+            Status: 'INTERNAL_ERROR'
+        });
+        throw error;
+    }
+    } catch (error) {
+        await Logger.logBackendError('TailorLLM', error, {
+            TransactionID: transactionId,
+            Endpoint: 'tailorSectionStructured',
+            Status: 'INTERNAL_ERROR'
+        });
+        throw error;
     }
 }
 
@@ -380,7 +443,7 @@ function generateFallbackStructuredTailoring(
     sectionType: string,
     rawBody: any
 ): StructuredTailorResponse {
-    console.log('[generateFallbackStructuredTailoring] Generating fallback for:', sectionName);
+    // Fallback generation - no logging needed as this is intentional fallback
 
     const entries: EntrySuggestion[] = [];
 
@@ -534,7 +597,7 @@ Return a JSON object with keys section_name and tailored_html only.`;
 
         throw new Error('No valid tailored_html found in response');
     } catch (parseError) {
-        console.error('[tailorSectionWithLLM] Parse error:', parseError);
+        // Parse error already logged in catch block above
         throw new Error('Failed to parse LLM response');
     }
 }

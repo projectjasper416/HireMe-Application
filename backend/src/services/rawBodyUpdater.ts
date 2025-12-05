@@ -3,6 +3,9 @@
  * This allows maintaining PDF formatting while showing user edits
  */
 
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
+
 export function updateRawBodyWithText(rawBody: any, newText: string): any {
     if (!rawBody || typeof rawBody !== 'object') {
         // If no structure, return the text as-is
@@ -10,6 +13,26 @@ export function updateRawBodyWithText(rawBody: any, newText: string): any {
             summary: [newText],
             entries: [],
         };
+    }
+
+    // Log if we encounter an unexpected structure that we can't process
+    const hasUnexpectedStructure = 
+        !Array.isArray(rawBody) && 
+        !rawBody.summary && 
+        !rawBody.entries && 
+        typeof rawBody === 'object' &&
+        Object.keys(rawBody).length > 0;
+
+    if (hasUnexpectedStructure) {
+        const transactionId = `rawbody-update-${uuid()}`;
+        Logger.logBackendError('RawBodyTransform', new Error('Unexpected raw_body structure in updateRawBodyWithText'), {
+            TransactionID: transactionId,
+            Endpoint: 'updateRawBodyWithText',
+            Status: 'DATA_ERROR',
+            Exception: `Unexpected structure: ${JSON.stringify(Object.keys(rawBody)).substring(0, 200)}`
+        }).catch(() => {
+            // Ignore logging errors
+        });
     }
 
     // Parse the new text into lines

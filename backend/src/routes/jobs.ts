@@ -2,6 +2,8 @@ import { Router, type Response } from 'express';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth';
 import { supabaseAdmin } from '../config/supabase';
 import { extractKeywordsFromJobDescription } from '../services/extractKeywords';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 
 const jobsRouter = Router();
 
@@ -10,11 +12,13 @@ const jobsRouter = Router();
 
 // POST /jobs/ – Create job entry
 jobsRouter.post('/', requireAuth(), async (req: AuthenticatedRequest, res: Response) => {
+  const transactionId = `create-job-${uuid()}`;
   try {
     const { company, role, job_description, status = 'Interested', notes, source_url } = req.body;
     const userId = req.user!.id;
 
     if (!company || !role) {
+      
       return res.status(400).json({ error: 'Company and role are required' });
     }
 
@@ -33,19 +37,38 @@ jobsRouter.post('/', requireAuth(), async (req: AuthenticatedRequest, res: Respo
       .single();
 
     if (error) {
-      console.error('Error creating job:', error);
+      await Logger.logBackendError('Jobs', error, {
+        TransactionID: transactionId,
+        Endpoint: 'POST /jobs',
+        UserID: userId,
+        RequestPayload: { company, role }
+      });
       return res.status(500).json({ error: 'Failed to create job entry' });
     }
 
+    await Logger.logInfo('Jobs', 'Job entry created successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'POST /jobs',
+      UserID: userId,
+      Status: 'SUCCESS',
+      RelatedTo: data?.id
+    });
+
     res.status(201).json({ job: data });
   } catch (err: any) {
-    console.error('Error in POST /jobs:', err);
+    await Logger.logBackendError('Jobs', err, {
+      TransactionID: transactionId,
+      Endpoint: 'POST /jobs',
+      UserID: req.user?.id,
+      Status: 'INTERNAL_ERROR'
+    });
     res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
 // GET /jobs/ – List user jobs
 jobsRouter.get('/', requireAuth(), async (req: AuthenticatedRequest, res: Response) => {
+  const transactionId = `list-jobs-${uuid()}`;
   try {
     const userId = req.user!.id;
 
@@ -58,11 +81,24 @@ jobsRouter.get('/', requireAuth(), async (req: AuthenticatedRequest, res: Respon
     if (error) {
       // Check if table doesn't exist
       if (error.code === '42P01' || error.message?.includes('does not exist')) {
+        await Logger.logBackendError('Jobs', error, {
+          TransactionID: transactionId,
+          Endpoint: 'GET /jobs',
+          UserID: userId,
+          Status: 'DATABASE_ERROR',
+          Exception: 'Database table not found. Please run the migration: docs/sql/job_tracker.sql'
+        });
         return res.status(500).json({
           error: 'Database table not found. Please run the migration: docs/sql/job_tracker.sql',
           detail: error.message,
         });
       }
+      await Logger.logBackendError('Jobs', error, {
+        TransactionID: transactionId,
+        Endpoint: 'GET /jobs',
+        UserID: userId,
+        Status: 'DATABASE_ERROR'
+      });
       return res.status(500).json({ error: 'Failed to fetch jobs', detail: error.message });
     }
 
@@ -78,7 +114,15 @@ jobsRouter.get('/', requireAuth(), async (req: AuthenticatedRequest, res: Respon
         .select('job_id, resume_id')
         .in('job_id', jobIds);
 
-      if (!tailoringsError && tailorings) {
+      if (tailoringsError) {
+        await Logger.logBackendError('Jobs', tailoringsError, {
+          TransactionID: transactionId,
+          Endpoint: 'GET /jobs',
+          UserID: userId,
+          Status: 'DATABASE_ERROR',
+          Exception: 'Failed to fetch tailoring info'
+        });
+      } else if (tailorings) {
         // Map job_id -> resume_id (taking the first one found if multiple, though usually one resume per job makes sense or most recent)
         tailorings.forEach(t => {
           if (t.job_id) tailoringsMap[t.job_id] = t.resume_id;
@@ -93,12 +137,19 @@ jobsRouter.get('/', requireAuth(), async (req: AuthenticatedRequest, res: Respon
 
     res.json({ jobs: jobsWithTailoring });
   } catch (err: any) {
+    await Logger.logBackendError('Jobs', err, {
+      TransactionID: transactionId,
+      Endpoint: 'GET /jobs',
+      UserID: req.user?.id,
+      Status: 'INTERNAL_ERROR'
+    });
     res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
 // PATCH /jobs/:id – Update status (drag-and-drop) or other fields
 jobsRouter.patch('/:id', requireAuth(), async (req: AuthenticatedRequest, res: Response) => {
+  const transactionId = `update-job-${uuid()}`;
   try {
     const { id } = req.params;
     const userId = req.user!.id;
@@ -113,6 +164,13 @@ jobsRouter.patch('/:id', requireAuth(), async (req: AuthenticatedRequest, res: R
       .single();
 
     if (fetchError || !existingJob) {
+      await Logger.logBackendError('Jobs', new Error('Job not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'PATCH /jobs/:id',
+        UserID: userId,
+        RelatedTo: id,
+        Status: 'NOT_FOUND'
+      });
       return res.status(404).json({ error: 'Job not found' });
     }
 
@@ -136,19 +194,31 @@ jobsRouter.patch('/:id', requireAuth(), async (req: AuthenticatedRequest, res: R
       .single();
 
     if (error) {
-      console.error('Error updating job:', error);
+      await Logger.logBackendError('Jobs', error, {
+        TransactionID: transactionId,
+        Endpoint: 'PATCH /jobs/:id',
+        UserID: userId,
+        RelatedTo: id
+      });
       return res.status(500).json({ error: 'Failed to update job' });
     }
 
     res.json({ job: data });
   } catch (err: any) {
-    console.error('Error in PATCH /jobs/:id:', err);
+    await Logger.logBackendError('Jobs', err, {
+      TransactionID: transactionId,
+      Endpoint: 'PATCH /jobs/:id',
+      UserID: req.user?.id,
+      RelatedTo: req.params.id,
+      Status: 'INTERNAL_ERROR'
+    });
     res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
 // DELETE /jobs/:id – Remove job
 jobsRouter.delete('/:id', requireAuth(), async (req: AuthenticatedRequest, res: Response) => {
+  const transactionId = `delete-job-${uuid()}`;
   try {
     const { id } = req.params;
     const userId = req.user!.id;
@@ -162,25 +232,44 @@ jobsRouter.delete('/:id', requireAuth(), async (req: AuthenticatedRequest, res: 
       .single();
 
     if (fetchError || !existingJob) {
+      await Logger.logBackendError('Jobs', new Error('Job not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'DELETE /jobs/:id',
+        UserID: userId,
+        RelatedTo: id,
+        Status: 'NOT_FOUND'
+      });
       return res.status(404).json({ error: 'Job not found' });
     }
 
     const { error } = await supabaseAdmin.from('jobs').delete().eq('id', id).eq('user_id', userId);
 
     if (error) {
-      console.error('Error deleting job:', error);
+      await Logger.logBackendError('Jobs', error, {
+        TransactionID: transactionId,
+        Endpoint: 'DELETE /jobs/:id',
+        UserID: userId,
+        RelatedTo: id
+      });
       return res.status(500).json({ error: 'Failed to delete job' });
     }
 
     res.status(204).send();
   } catch (err: any) {
-    console.error('Error in DELETE /jobs/:id:', err);
+    await Logger.logBackendError('Jobs', err, {
+      TransactionID: transactionId,
+      Endpoint: 'DELETE /jobs/:id',
+      UserID: req.user?.id,
+      RelatedTo: req.params.id,
+      Status: 'INTERNAL_ERROR'
+    });
     res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
 // GET /jobs/:id/keywords – Extract keywords from job description and store them
 jobsRouter.get('/:id/keywords', requireAuth(), async (req: AuthenticatedRequest, res: Response) => {
+  const transactionId = `extract-keywords-${uuid()}`;
   try {
     const { id } = req.params;
     const userId = req.user!.id;
@@ -194,10 +283,24 @@ jobsRouter.get('/:id/keywords', requireAuth(), async (req: AuthenticatedRequest,
       .single();
 
     if (fetchError || !job) {
+      await Logger.logBackendError('Jobs', new Error('Job not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'GET /jobs/:id/keywords',
+        UserID: userId,
+        RelatedTo: id,
+        Status: 'NOT_FOUND'
+      });
       return res.status(404).json({ error: 'Job not found' });
     }
 
     if (!job.job_description || job.job_description.trim().length === 0) {
+      await Logger.logBackendError('Jobs', new Error('Job description is required to extract keywords'), {
+        TransactionID: transactionId,
+        Endpoint: 'GET /jobs/:id/keywords',
+        UserID: userId,
+        RelatedTo: id,
+        Status: 'VALIDATION_ERROR'
+      });
       return res.status(400).json({ error: 'Job description is required to extract keywords' });
     }
 
@@ -215,20 +318,40 @@ jobsRouter.get('/:id/keywords', requireAuth(), async (req: AuthenticatedRequest,
         .eq('user_id', userId);
 
       if (updateError) {
-        console.error('Error storing keywords:', updateError);
+        await Logger.logBackendError('Jobs', updateError, {
+          TransactionID: transactionId,
+          Endpoint: 'GET /jobs/:id/keywords',
+          UserID: userId,
+          RelatedTo: id,
+          Status: 'DATABASE_ERROR',
+          Exception: 'Failed to store keywords'
+        });
         // Still return keywords even if storage fails
       }
 
       res.json(keywords);
     } catch (err: any) {
-      console.error('Error extracting keywords:', err);
+      await Logger.logBackendError('Jobs', err, {
+        TransactionID: transactionId,
+        Endpoint: 'GET /jobs/:id/keywords',
+        UserID: userId,
+        RelatedTo: id,
+        Status: 'LLM_ERROR',
+        Exception: 'Failed to extract keywords'
+      });
       return res.status(500).json({
         error: 'Failed to extract keywords',
         detail: err.message || 'LLM keywords extraction failed',
       });
     }
   } catch (err: any) {
-    console.error('Error in GET /jobs/:id/keywords:', err);
+    await Logger.logBackendError('Jobs', err, {
+      TransactionID: transactionId,
+      Endpoint: 'GET /jobs/:id/keywords',
+      UserID: req.user?.id,
+      RelatedTo: req.params.id,
+      Status: 'INTERNAL_ERROR'
+    });
     res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });

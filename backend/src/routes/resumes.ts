@@ -11,6 +11,7 @@ import { reviewSectionStructured } from '../services/structuredReviewLLM';
 import { regenerateBulletWithLLM } from '../services/regenerateBulletLLM';
 import { tailorSectionWithLLM, tailorSectionStructured } from '../services/tailorLLM';
 import type { ResumeReview, ResumeSection } from '../types/resume';
+import { Logger } from '../utils/Logger';
 
 function sanitizeUnicode(str: string): string {
   return str
@@ -90,33 +91,47 @@ resumeRouter.use(requireAuth());
 
 // TDD 4.2 Resume Management Endpoints: upload + parse
 resumeRouter.post('/', async (req: AuthenticatedRequest, res) => {
-  const { fileName, originalPdfBase64 } = req.body as {
-    fileName: string;
-    originalPdfBase64: string;
-  };
-
-  if (!fileName) {
-    return res.status(400).json({ error: 'fileName is required' });
-  }
-
-  if (!originalPdfBase64) {
-    return res.status(400).json({ error: 'originalPdfBase64 is required' });
-  }
-
-  let parsedSections;
+  const transactionId = `upload-resume-${uuid()}`;
   try {
-    parsedSections = await parseResumeWithLLM({ fileBase64: originalPdfBase64 });
-  } catch (error) {
-    console.error('Resume parsing LLM error:', error);
-    const detail = error instanceof Error ? error.message : 'Unknown error';
-    return res.status(502).json({
-      error: 'Unable to parse resume. Check parsing LLM configuration or credentials.',
-      detail,
-    });
-  }
-  console.log('[resumes.ts] parsedSections:', JSON.stringify(parsedSections));
+    const { fileName, originalPdfBase64 } = req.body as {
+      fileName: string;
+      originalPdfBase64: string;
+    };
+
+    if (!fileName) {
+      return res.status(400).json({ error: 'fileName is required' });
+    }
+
+    if (!originalPdfBase64) {
+      await Logger.logBackendError('Resumes', new Error('originalPdfBase64 is required'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes',
+        UserID: req.user?.id,
+        Status: 'VALIDATION_ERROR'
+      });
+      return res.status(400).json({ error: 'originalPdfBase64 is required' });
+    }
+
+    let parsedSections;
+    try {
+      parsedSections = await parseResumeWithLLM({ fileBase64: originalPdfBase64 });
+    } catch (error) {
+      await Logger.logBackendError('Resumes', error, {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes',
+        UserID: req.user?.id,
+        Status: 'LLM_ERROR',
+        Exception: 'Resume parsing LLM error'
+      });
+      const detail = error instanceof Error ? error.message : 'Unknown error';
+      return res.status(502).json({
+        error: 'Unable to parse resume. Check parsing LLM configuration or credentials.',
+        detail,
+      });
+    }
+  //console.log('[resumes.ts] parsedSections:', JSON.stringify(parsedSections));
   const sanitizedSections = sanitizeSections(parsedSections);
-  console.log('[resumes.ts] sanitizedSections:', JSON.stringify(sanitizedSections));
+  //console.log('[resumes.ts] sanitizedSections:', JSON.stringify(sanitizedSections));
   const hasContactSection = sanitizedSections.some((section) =>
     section.heading.toLowerCase().includes('contact')
   );
@@ -133,7 +148,13 @@ resumeRouter.post('/', async (req: AuthenticatedRequest, res) => {
         }
       }
     } catch (contactErr) {
-      console.warn('Contact extraction via LLM failed, continuing without contact section.', contactErr);
+      await Logger.logBackendError('Resumes', contactErr as Error, {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes',
+        UserID: req.user?.id,
+        Status: 'LLM_WARNING',
+        Exception: 'Contact extraction via LLM failed, continuing without contact section'
+      });
     }
   }
 
@@ -146,43 +167,85 @@ resumeRouter.post('/', async (req: AuthenticatedRequest, res) => {
     .map((section) => `${section.heading}\n${section.body}`)
     .join('\n\n');
   const resumeId = uuid();
-  console.log('[resumes.ts] normalizedSections:', JSON.stringify(normalizedSections));
-  const { error } = await supabaseAdmin.from('resumes').insert({
-    id: resumeId,
-    user_id: req.user!.id,
-    original_name: fileName,
-    original_content: normalizedContent,
-    sections: normalizedSections,
-    original_pdf_base64: originalPdfBase64,
-  });
+  //console.log('[resumes.ts] normalizedSections:', JSON.stringify(normalizedSections));
+    const { error } = await supabaseAdmin.from('resumes').insert({
+      id: resumeId,
+      user_id: req.user!.id,
+      original_name: fileName,
+      original_content: normalizedContent,
+      sections: normalizedSections,
+      original_pdf_base64: originalPdfBase64,
+    });
 
-  if (error) return res.status(400).json({ error: error.message });
+    if (error) {
+      await Logger.logBackendError('Resumes', error, {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes',
+        UserID: req.user?.id,
+        Status: 'DATABASE_ERROR'
+      });
+      return res.status(400).json({ error: error.message });
+    }
 
-  return res.status(201).json({ id: resumeId, sections: normalizedSections });
+    await Logger.logInfo('Resumes', 'Resume uploaded and parsed successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes',
+      UserID: req.user?.id,
+      Status: 'SUCCESS',
+      RelatedTo: resumeId,
+      ResponsePayload: { sectionsCount: normalizedSections.length }
+    });
+
+    return res.status(201).json({ id: resumeId, sections: normalizedSections });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes',
+      UserID: req.user?.id,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 resumeRouter.get('/:resumeId/sections', async (req: AuthenticatedRequest, res) => {
-  const { resumeId } = req.params;
+  const transactionId = `get-sections-${uuid()}`;
+  try {
+    const { resumeId } = req.params;
 
-  const { data, error } = await supabaseAdmin
-    .from('resumes')
-    .select('sections, created_at')
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .maybeSingle();
+    const { data, error } = await supabaseAdmin
+      .from('resumes')
+      .select('sections, created_at')
+      .eq('id', resumeId)
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
 
-  if (error || !data) {
-    return res.status(404).json({ error: 'Resume not found' });
-  }
+    if (error || !data) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'GET /resumes/:resumeId/sections',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
+      });
+      return res.status(404).json({ error: 'Resume not found' });
+    }
 
-  const { data: reviewData, error: reviewError } = await supabaseAdmin
-    .from('resume_ai_reviews')
-    .select('section_name, ai_suggestions_html, raw_data, final_updated, created_at')
-    .eq('resume_id', resumeId);
+    const { data: reviewData, error: reviewError } = await supabaseAdmin
+      .from('resume_ai_reviews')
+      .select('section_name, ai_suggestions_html, raw_data, final_updated, created_at')
+      .eq('resume_id', resumeId);
 
-  if (reviewError) {
-    return res.status(400).json({ error: reviewError.message });
-  }
+    if (reviewError) {
+      await Logger.logBackendError('Resumes', reviewError, {
+        TransactionID: transactionId,
+        Endpoint: 'GET /resumes/:resumeId/sections',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'DATABASE_ERROR'
+      });
+      return res.status(400).json({ error: reviewError.message });
+    }
 
   const reviewsBySection =
     reviewData?.reduce<Record<string, ResumeReview>>((acc, review) => {
@@ -214,10 +277,20 @@ resumeRouter.get('/:resumeId/sections', async (req: AuthenticatedRequest, res) =
     };
   });
 
-  return res.json({
-    sections: sectionsWithReview,
-    created_at: data.created_at,
-  });
+    return res.json({
+      sections: sectionsWithReview,
+      created_at: data.created_at,
+    });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'GET /resumes/:resumeId/sections',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 function acceptTailoringChanges(html: string): string {
@@ -255,6 +328,7 @@ function acceptTailoringChanges(html: string): string {
 }
 
 resumeRouter.post('/:resumeId/export', async (req: AuthenticatedRequest, res) => {
+  const transactionId = `export-resume-${uuid()}`;
   const { resumeId } = req.params;
   const { templateId, jobId } = (req.body ?? {}) as {
     templateId?: string;
@@ -350,69 +424,101 @@ resumeRouter.post('/:resumeId/export', async (req: AuthenticatedRequest, res) =>
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pdf"`);
     res.send(pdfBuffer);
   } catch (err) {
-    console.error('Failed to render resume PDF', err);
+    await Logger.logBackendError('Resumes', err, {
+      TransactionID: transactionId,
+      Endpoint: 'GET /resumes/:resumeId/export',
+      UserID: req.user?.id,
+      RelatedTo: resumeId,
+      Status: 'EXPORT_ERROR'
+    });
     const message = err instanceof Error ? err.message : 'Unknown error';
     res.status(500).json({ error: 'Failed to export resume', detail: message });
   }
 });
 
 resumeRouter.post('/:resumeId/review', async (req: AuthenticatedRequest, res) => {
-  const { resumeId } = req.params;
+  const transactionId = `review-resume-${uuid()}`;
+  try {
+    const { resumeId } = req.params;
 
-  const { data, error } = await supabaseAdmin
-    .from('resumes')
-    .select('sections')
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .maybeSingle();
 
-  if (error || !data) {
-    return res.status(404).json({ error: 'Resume not found' });
-  }
+    const { data, error } = await supabaseAdmin
+      .from('resumes')
+      .select('sections')
+      .eq('id', resumeId)
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
 
-  const sections = data.sections as ResumeSection[];
-  const results: ResumeReview[] = [];
-
-  for (const section of sections) {
-    try {
-      // Always use structured review
-      const structuredReview = await reviewSectionStructured({
-        sectionName: section.heading,
-        rawBody: section.raw_body || { summary: [section.body] },
+    if (error || !data) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/review',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
       });
-
-      // Store structured review as JSON string in ai_suggestions_html
-      results.push({
-        section_name: section.heading,
-        ai_suggestions_html: JSON.stringify(structuredReview),
-        raw_data: JSON.stringify(section.raw_body || { summary: [section.body] }),
-        created_at: new Date().toISOString(),
-      });
-    } catch (err) {
-      return res.status(502).json({
-        error: `Unable to review section "${section.heading}"`,
-        detail: err instanceof Error ? err.message : 'Unknown error',
-      });
+      return res.status(404).json({ error: 'Resume not found' });
     }
-  }
 
-  if (results.length > 0) {
-    const { error: upsertError } = await supabaseAdmin
-      .from('resume_ai_reviews')
-      .upsert(
-        results.map((review) => ({
-          resume_id: resumeId,
-          section_name: review.section_name,
-          ai_suggestions_html: review.ai_suggestions_html,
-          raw_data: review.raw_data,
-          final_updated: null, // Clear previous edits so new suggestions are shown
-        })),
-        { onConflict: 'resume_id,section_name' }
-      );
+    const sections = data.sections as ResumeSection[];
+    const results: ResumeReview[] = [];
 
-    if (upsertError) {
-      return res.status(400).json({ error: upsertError.message });
+    for (const section of sections) {
+      try {
+        // Always use structured review
+        const structuredReview = await reviewSectionStructured({
+          sectionName: section.heading,
+          rawBody: section.raw_body || { summary: [section.body] },
+        });
+
+        // Store structured review as JSON string in ai_suggestions_html
+        results.push({
+          section_name: section.heading,
+          ai_suggestions_html: JSON.stringify(structuredReview),
+          raw_data: JSON.stringify(section.raw_body || { summary: [section.body] }),
+          created_at: new Date().toISOString(),
+        });
+      } catch (err) {
+        await Logger.logBackendError('Resumes', err, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/review',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'LLM_ERROR',
+          Exception: `Unable to review section "${section.heading}"`
+        });
+        return res.status(502).json({
+          error: `Unable to review section "${section.heading}"`,
+          detail: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
     }
+
+    if (results.length > 0) {
+      const { error: upsertError } = await supabaseAdmin
+        .from('resume_ai_reviews')
+        .upsert(
+          results.map((review) => ({
+            resume_id: resumeId,
+            section_name: review.section_name,
+            ai_suggestions_html: review.ai_suggestions_html,
+            raw_data: review.raw_data,
+            final_updated: null, // Clear previous edits so new suggestions are shown
+          })),
+          { onConflict: 'resume_id,section_name' }
+        );
+
+      if (upsertError) {
+        await Logger.logBackendError('Resumes', upsertError, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/review',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'DATABASE_ERROR',
+          Exception: 'Error upserting review results'
+        });
+        return res.status(400).json({ error: upsertError.message });
+      }
 
     // Calculate generic resume score after review completes (async, don't block response)
     // This will create or update the score record
@@ -484,137 +590,210 @@ resumeRouter.post('/:resumeId/review', async (req: AuthenticatedRequest, res) =>
           }
         }
       } catch (err) {
-        console.error('Background score calculation failed:', err);
+        await Logger.logBackendError('Resumes', err, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/review',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'BACKGROUND_ERROR',
+          Exception: 'Background score calculation failed'
+        });
         // Don't fail the review request if score calculation fails
       }
     })();
-  }
+    }
 
-  return res.json({ reviews: results });
+    await Logger.logInfo('Resumes', 'Resume review completed successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/review',
+      UserID: req.user?.id,
+      RelatedTo: resumeId,
+      Status: 'SUCCESS',
+      ResponsePayload: { reviewsCount: results.length }
+    });
+
+    return res.json({ reviews: results });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/review',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 resumeRouter.post('/:resumeId/tailor', async (req: AuthenticatedRequest, res) => {
-  const { resumeId } = req.params;
-  const { jobId, jobDescription, keywords, sectionName } = req.body as {
-    jobId?: string;
-    jobDescription?: string;
-    keywords?: string[];
-    sectionName?: string;
-  };
+  const transactionId = `tailor-resume-${uuid()}`;
+  try {
+    const { resumeId } = req.params;
+    const { jobId, jobDescription, keywords, sectionName } = req.body as {
+      jobId?: string;
+      jobDescription?: string;
+      keywords?: string[];
+      sectionName?: string;
+    };
 
-  if (!jobId && (!jobDescription || !keywords)) {
-    return res.status(400).json({ error: 'Either jobId OR (jobDescription AND keywords) must be provided' });
-  }
+    if (!jobId && (!jobDescription || !keywords)) {
+      await Logger.logBackendError('Resumes', new Error('Either jobId OR (jobDescription AND keywords) must be provided'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/tailor',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'VALIDATION_ERROR'
+      });
+      return res.status(400).json({ error: 'Either jobId OR (jobDescription AND keywords) must be provided' });
+    }
 
-  const { data: resume, error } = await supabaseAdmin
-    .from('resumes')
-    .select('sections')
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .maybeSingle();
-
-  if (error || !resume) {
-    return res.status(404).json({ error: 'Resume not found' });
-  }
-
-  let targetJD = jobDescription;
-  let targetKeywords = keywords;
-
-  if (jobId) {
-    const { data: job, error: jobError } = await supabaseAdmin
-      .from('jobs')
-      .select('job_description, keywords')
-      .eq('id', jobId)
+    const { data: resume, error } = await supabaseAdmin
+      .from('resumes')
+      .select('sections')
+      .eq('id', resumeId)
       .eq('user_id', req.user!.id)
       .maybeSingle();
 
-    if (jobError || !job) {
-      return res.status(404).json({ error: 'Job not found' });
-    }
-    targetJD = job.job_description;
-    const rawKeywords = job.keywords as any;
-    if (rawKeywords?.categories && Array.isArray(rawKeywords.categories)) {
-      targetKeywords = rawKeywords.categories.flatMap((c: any) => c.keywords || []);
-    } else if (Array.isArray(rawKeywords)) {
-      targetKeywords = rawKeywords;
-    } else {
-      targetKeywords = [];
-    }
-  }
-
-  if (!targetJD) {
-    return res.status(400).json({ error: 'Job description is missing' });
-  }
-
-  let sections = resume.sections as ResumeSection[];
-
-  // We intentionally DO NOT merge final_updated here.
-  // Tailoring should always start from the ORIGINAL resume content.
-
-  if (sectionName) {
-    sections = sections.filter((s) => s.heading === sectionName);
-    if (sections.length === 0) {
-      return res.status(404).json({ error: 'Section not found' });
-    }
-  }
-
-  const results: any[] = [];
-
-  for (const section of sections) {
-    try {
-      // Call structured tailoring LLM
-      const structuredResult = await tailorSectionStructured({
-        sectionName: section.heading,
-        rawBody: section.raw_body || { summary: [section.body] },
-        jobDescription: targetJD,
-        keywords: targetKeywords || [],
+    if (error || !resume) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/tailor',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
       });
-
-      results.push({
-        resume_id: resumeId,
-        job_id: jobId || null,
-        section_name: section.heading,
-
-        final_updated: null,
-        tailored_suggestions: JSON.stringify(structuredResult), // Stringify for text column
-      });
-    } catch (err) {
-      console.error(`Error tailoring section ${section.heading}:`, err);
-      // Continue with other sections
+      return res.status(404).json({ error: 'Resume not found' });
     }
-  }
 
-  if (results.length > 0) {
-    // Delete existing tailorings for this resume+job to avoid duplicates/stale data
+    let targetJD = jobDescription;
+    let targetKeywords = keywords;
+
     if (jobId) {
-      await supabaseAdmin
-        .from('resume_ai_tailorings')
-        .delete()
-        .eq('resume_id', resumeId)
-        .eq('job_id', jobId);
-    } else {
-      // If no job ID, we might want to clear previous ad-hoc tailorings or just insert new ones.
-      // Since unique constraint is (resume_id, job_id, section_name), and job_id is nullable...
-      // We should probably clear where job_id is null.
-      await supabaseAdmin
-        .from('resume_ai_tailorings')
-        .delete()
-        .eq('resume_id', resumeId)
-        .is('job_id', null);
+      const { data: job, error: jobError } = await supabaseAdmin
+        .from('jobs')
+        .select('job_description, keywords')
+        .eq('id', jobId)
+        .eq('user_id', req.user!.id)
+        .maybeSingle();
+
+      if (jobError || !job) {
+        await Logger.logBackendError('Resumes', new Error('Job not found'), {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/tailor',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'NOT_FOUND',
+          Exception: `Job ${jobId} not found`
+        });
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      targetJD = job.job_description;
+      const rawKeywords = job.keywords as any;
+      if (rawKeywords?.categories && Array.isArray(rawKeywords.categories)) {
+        targetKeywords = rawKeywords.categories.flatMap((c: any) => c.keywords || []);
+      } else if (Array.isArray(rawKeywords)) {
+        targetKeywords = rawKeywords;
+      } else {
+        targetKeywords = [];
+      }
     }
 
-    const { error: insertError } = await supabaseAdmin
-      .from('resume_ai_tailorings')
-      .insert(results);
-
-    if (insertError) {
-      return res.status(400).json({ error: insertError.message });
+    if (!targetJD) {
+      return res.status(400).json({ error: 'Job description is missing' });
     }
 
-    // Calculate job-specific ATS score after tailoring completes (async, don't block response)
-    // Only if jobId exists (job-specific tailoring)
-    if (jobId) {
-      (async () => {
+    let sections = resume.sections as ResumeSection[];
+
+    // We intentionally DO NOT merge final_updated here.
+    // Tailoring should always start from the ORIGINAL resume content.
+
+    if (sectionName) {
+      sections = sections.filter((s) => s.heading === sectionName);
+      if (sections.length === 0) {
+        await Logger.logBackendError('Resumes', new Error('Section not found'), {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/tailor',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'NOT_FOUND',
+          Exception: `Section "${sectionName}" not found`
+        });
+        return res.status(404).json({ error: 'Section not found' });
+      }
+    }
+
+    const results: any[] = [];
+
+    for (const section of sections) {
+      try {
+        // Call structured tailoring LLM
+        const structuredResult = await tailorSectionStructured({
+          sectionName: section.heading,
+          rawBody: section.raw_body || { summary: [section.body] },
+          jobDescription: targetJD,
+          keywords: targetKeywords || [],
+        });
+
+        results.push({
+          resume_id: resumeId,
+          job_id: jobId || null,
+          section_name: section.heading,
+
+          final_updated: null,
+          tailored_suggestions: JSON.stringify(structuredResult), // Stringify for text column
+        });
+      } catch (err) {
+        await Logger.logBackendError('Resumes', err, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/tailor',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'TAILOR_ERROR',
+          Exception: `Error tailoring section ${section.heading}`
+        });
+        // Continue with other sections
+      }
+    }
+
+    if (results.length > 0) {
+      // Delete existing tailorings for this resume+job to avoid duplicates/stale data
+      if (jobId) {
+        await supabaseAdmin
+          .from('resume_ai_tailorings')
+          .delete()
+          .eq('resume_id', resumeId)
+          .eq('job_id', jobId);
+      } else {
+        // If no job ID, we might want to clear previous ad-hoc tailorings or just insert new ones.
+        // Since unique constraint is (resume_id, job_id, section_name), and job_id is nullable...
+        // We should probably clear where job_id is null.
+        await supabaseAdmin
+          .from('resume_ai_tailorings')
+          .delete()
+          .eq('resume_id', resumeId)
+          .is('job_id', null);
+      }
+
+      const { error: insertError } = await supabaseAdmin
+        .from('resume_ai_tailorings')
+        .insert(results);
+
+      if (insertError) {
+        await Logger.logBackendError('Resumes', insertError, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/tailor',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'DATABASE_ERROR',
+          Exception: 'Error inserting tailoring results'
+        });
+        return res.status(400).json({ error: insertError.message });
+      }
+
+      // Calculate job-specific ATS score after tailoring completes (async, don't block response)
+      // Only if jobId exists (job-specific tailoring)
+      if (jobId) {
+        (async () => {
         try {
           const { calculateJobSpecificATSScore } = await import('../services/jobSpecificATSScore');
 
@@ -706,64 +885,125 @@ resumeRouter.post('/:resumeId/tailor', async (req: AuthenticatedRequest, res) =>
             }
           }
         } catch (err) {
-          console.error('Background score calculation failed:', err);
+          await Logger.logBackendError('Resumes', err, {
+            TransactionID: transactionId,
+            Endpoint: 'POST /resumes/:resumeId/tailor',
+            UserID: req.user?.id,
+            RelatedTo: resumeId,
+            Status: 'BACKGROUND_ERROR',
+            Exception: 'Background score calculation failed'
+          });
           // Don't fail the tailor request if score calculation fails
         }
-      })();
+        })();
+      }
     }
-  }
 
-  return res.json({ tailorings: results });
+    await Logger.logInfo('Resumes', 'Resume tailoring completed successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/tailor',
+      UserID: req.user?.id,
+      RelatedTo: resumeId,
+      Status: 'SUCCESS',
+      ResponsePayload: { tailoringsCount: results.length, jobId }
+    });
+
+    return res.json({ tailorings: results });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/tailor',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 resumeRouter.get('/:resumeId/tailorings', async (req: AuthenticatedRequest, res) => {
-  const { resumeId } = req.params;
-  const { jobId } = req.query;
+  const transactionId = `get-tailorings-${uuid()}`;
+  try {
+    const { resumeId } = req.params;
+    const { jobId } = req.query;
 
-  let query = supabaseAdmin
-    .from('resume_ai_tailorings')
-    .select('*, final_updated') // Explicitly selecting final_updated just in case * doesn't catch it immediately or for clarity
-    .eq('resume_id', resumeId);
+    let query = supabaseAdmin
+      .from('resume_ai_tailorings')
+      .select('*, final_updated') // Explicitly selecting final_updated just in case * doesn't catch it immediately or for clarity
+      .eq('resume_id', resumeId);
 
-  if (jobId) {
-    query = query.eq('job_id', jobId);
-  } else {
-    query = query.is('job_id', null);
+    if (jobId) {
+      query = query.eq('job_id', jobId);
+    } else {
+      query = query.is('job_id', null);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      await Logger.logBackendError('Resumes', error, {
+        TransactionID: transactionId,
+        Endpoint: 'GET /resumes/:resumeId/tailorings',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'DATABASE_ERROR'
+      });
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.json({ tailorings: data });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'GET /resumes/:resumeId/tailorings',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  const { data, error } = await query;
-
-  if (error) {
-    return res.status(400).json({ error: error.message });
-  }
-
-  return res.json({ tailorings: data });
 });
 
 resumeRouter.put('/:resumeId/tailorings', async (req: AuthenticatedRequest, res) => {
-  const { resumeId } = req.params;
-  const { jobId, sectionName, tailoredHtml, originalText } = req.body as {
-    jobId: string;
-    sectionName: string;
-    tailoredHtml: string;
-    originalText: string;
-  };
+  const transactionId = `update-tailorings-${uuid()}`;
+  try {
+    const { resumeId } = req.params;
+    const { jobId, sectionName, tailoredHtml, originalText } = req.body as {
+      jobId: string;
+      sectionName: string;
+      tailoredHtml: string;
+      originalText: string;
+    };
 
-  if (!jobId || !sectionName || tailoredHtml === undefined || originalText === undefined) {
-    return res.status(400).json({ error: 'Missing required fields: jobId, sectionName, tailoredHtml, originalText' });
-  }
+    if (!jobId || !sectionName || tailoredHtml === undefined || originalText === undefined) {
+      await Logger.logBackendError('Resumes', new Error('Missing required fields'), {
+        TransactionID: transactionId,
+        Endpoint: 'PUT /resumes/:resumeId/tailorings',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'VALIDATION_ERROR'
+      });
+      return res.status(400).json({ error: 'Missing required fields: jobId, sectionName, tailoredHtml, originalText' });
+    }
 
-  // Verify resume ownership
-  const { data: resume, error: resumeError } = await supabaseAdmin
-    .from('resumes')
-    .select('id')
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .maybeSingle();
+    // Verify resume ownership
+    const { data: resume, error: resumeError } = await supabaseAdmin
+      .from('resumes')
+      .select('id')
+      .eq('id', resumeId)
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
 
-  if (resumeError || !resume) {
-    return res.status(404).json({ error: 'Resume not found' });
-  }
+    if (resumeError || !resume) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'PUT /resumes/:resumeId/tailorings',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
+      });
+      return res.status(404).json({ error: 'Resume not found' });
+    }
 
   // Upsert tailoring
   // Check if tailoring exists
@@ -805,81 +1045,156 @@ resumeRouter.put('/:resumeId/tailorings', async (req: AuthenticatedRequest, res)
     opError = error;
   }
 
-  if (opError) {
-    return res.status(400).json({ error: opError.message });
-  }
+    if (opError) {
+      await Logger.logBackendError('Resumes', opError, {
+        TransactionID: transactionId,
+        Endpoint: 'PUT /resumes/:resumeId/tailorings',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'DATABASE_ERROR'
+      });
+      return res.status(400).json({ error: opError.message });
+    }
 
-  return res.json({ tailoring: data });
+    await Logger.logInfo('Resumes', 'Tailoring updated successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'PUT /resumes/:resumeId/tailorings',
+      UserID: req.user?.id,
+      RelatedTo: resumeId,
+      Status: 'SUCCESS'
+    });
+
+    return res.json({ tailoring: data });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'PUT /resumes/:resumeId/tailorings',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // POST /:resumeId/tailorings/:jobId/sections/:sectionIndex/regenerate-bullet
 // Regenerate a single bullet for tailoring
 resumeRouter.post('/:resumeId/tailorings/:jobId/sections/:sectionIndex/regenerate-bullet', async (req: AuthenticatedRequest, res) => {
-  const { resumeId, jobId, sectionIndex } = req.params;
-  const { bulletId, bulletText, context } = req.body as {
-    bulletId: string;
-    bulletText: string;
-    context: {
-      sectionName: string;
-      jobDescription: string;
-      keywords?: string[];
-      company?: string;
-      title?: string;
-      dates?: string;
-      otherBullets?: string[];
-    };
-  };
-
-  if (!bulletText || !context) {
-    return res.status(400).json({ error: 'Missing bulletText or context' });
-  }
-
+  const transactionId = `regenerate-bullet-tailoring-${uuid()}`;
   try {
-    const result = await regenerateBulletWithLLM({
-      bulletText,
-      context,
-    });
+    const { resumeId, jobId, sectionIndex } = req.params;
+    const { bulletId, bulletText, context } = req.body as {
+      bulletId: string;
+      bulletText: string;
+      context: {
+        sectionName: string;
+        jobDescription: string;
+        keywords?: string[];
+        company?: string;
+        title?: string;
+        dates?: string;
+        otherBullets?: string[];
+      };
+    };
 
-    return res.json({
-      bulletId,
-      suggested: result.suggested,
+    if (!bulletText || !context) {
+      await Logger.logBackendError('Resumes', new Error('Missing bulletText or context'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/regenerate-bullet',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'VALIDATION_ERROR'
+      });
+      return res.status(400).json({ error: 'Missing bulletText or context' });
+    }
+
+    try {
+      const result = await regenerateBulletWithLLM({
+        bulletText,
+        context,
+      });
+
+      await Logger.logInfo('Resumes', 'Bullet regenerated successfully', {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/regenerate-bullet',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'SUCCESS'
+      });
+
+      return res.json({
+        bulletId,
+        suggested: result.suggested,
+      });
+    } catch (err) {
+      await Logger.logBackendError('Resumes', err, {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/regenerate-bullet',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'LLM_ERROR'
+      });
+      return res.status(502).json({
+        error: 'Failed to regenerate bullet',
+        detail: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/regenerate-bullet',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
     });
-  } catch (err) {
-    return res.status(502).json({
-      error: 'Failed to regenerate bullet',
-      detail: err instanceof Error ? err.message : 'Unknown error',
-    });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // POST /:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured
 // Save structured edits for tailoring (auto-save)
 resumeRouter.post('/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured', async (req: AuthenticatedRequest, res) => {
-  const { resumeId, jobId, sectionIndex } = req.params;
-  const { finalUpdated } = req.body as { finalUpdated: any };
+  const transactionId = `save-structured-tailoring-${uuid()}`;
+  try {
+    const { resumeId, jobId, sectionIndex } = req.params;
+    const { finalUpdated } = req.body as { finalUpdated: any };
 
-  const { data, error } = await supabaseAdmin
-    .from('resumes')
-    .select('sections')
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .maybeSingle();
+    const { data, error } = await supabaseAdmin
+      .from('resumes')
+      .select('sections')
+      .eq('id', resumeId)
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
 
-  if (error || !data) {
-    return res.status(404).json({ error: 'Resume not found' });
-  }
+    if (error || !data) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
+      });
+      return res.status(404).json({ error: 'Resume not found' });
+    }
 
-  const sections = data.sections as ResumeSection[];
-  const idx = parseInt(sectionIndex, 10);
+    const sections = data.sections as ResumeSection[];
+    const idx = parseInt(sectionIndex, 10);
 
-  if (idx < 0 || idx >= sections.length) {
-    return res.status(400).json({ error: 'Invalid section index' });
-  }
+    if (idx < 0 || idx >= sections.length) {
+      await Logger.logBackendError('Resumes', new Error('Invalid section index'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'VALIDATION_ERROR'
+      });
+      return res.status(400).json({ error: 'Invalid section index' });
+    }
 
-  const sectionHeading = sections[idx].heading;
+    const sectionHeading = sections[idx].heading;
 
-  // Upsert the final_updated in resume_ai_tailorings
-  const { data: existingTailoring } = await supabaseAdmin
+    // Upsert the final_updated in resume_ai_tailorings
+    const { data: existingTailoring } = await supabaseAdmin
     .from('resume_ai_tailorings')
     .select('*')
     .eq('resume_id', resumeId)
@@ -896,52 +1211,118 @@ resumeRouter.post('/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-stru
       .eq('section_name', sectionHeading)
       .select(); // Select to ensure the update is committed
 
-    if (updateError) return res.status(400).json({ error: updateError.message });
-  } else {
-    const { error: insertError } = await supabaseAdmin
-      .from('resume_ai_tailorings')
-      .insert({
-        resume_id: resumeId,
-        job_id: jobId,
-        section_name: sectionHeading,
-        final_updated: finalUpdated,
-
-        tailored_suggestions: null,
+    if (updateError) {
+      await Logger.logBackendError('Resumes', updateError, {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'DATABASE_ERROR'
       });
+      return res.status(400).json({ error: updateError.message });
+    }
+    } else {
+      const { error: insertError } = await supabaseAdmin
+        .from('resume_ai_tailorings')
+        .insert({
+          resume_id: resumeId,
+          job_id: jobId,
+          section_name: sectionHeading,
+          final_updated: finalUpdated,
 
-    if (insertError) return res.status(400).json({ error: insertError.message });
+          tailored_suggestions: null,
+        });
+
+      if (insertError) {
+        await Logger.logBackendError('Resumes', insertError, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'DATABASE_ERROR'
+        });
+        return res.status(400).json({ error: insertError.message });
+      }
+    }
+
+    await Logger.logInfo('Resumes', 'Structured edits saved successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured',
+      UserID: req.user?.id,
+      RelatedTo: resumeId,
+      Status: 'SUCCESS'
+    });
+
+    return res.json({ success: true });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/tailorings/:jobId/sections/:sectionIndex/save-structured',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  return res.json({ success: true });
 });
 
 resumeRouter.put('/:resumeId/sections/:index', async (req: AuthenticatedRequest, res) => {
-  const { resumeId, index } = req.params;
-  const sectionIndex = Number.parseInt(index, 10);
-  if (Number.isNaN(sectionIndex) || sectionIndex < 0) {
-    return res.status(400).json({ error: 'Invalid section index' });
-  }
+  const transactionId = `update-section-${uuid()}`;
+  try {
+    const { resumeId, index } = req.params;
+    const sectionIndex = Number.parseInt(index, 10);
+    if (Number.isNaN(sectionIndex) || sectionIndex < 0) {
+      await Logger.logBackendError('Resumes', new Error('Invalid section index'), {
+        TransactionID: transactionId,
+        Endpoint: 'PUT /resumes/:resumeId/sections/:index',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'VALIDATION_ERROR'
+      });
+      return res.status(400).json({ error: 'Invalid section index' });
+    }
 
-  const { content, rawBody } = req.body as { content: string; rawBody?: unknown };
-  if (typeof content !== 'string') {
-    return res.status(400).json({ error: 'content must be provided' });
-  }
+    const { content, rawBody } = req.body as { content: string; rawBody?: unknown };
+    if (typeof content !== 'string') {
+      await Logger.logBackendError('Resumes', new Error('content must be provided'), {
+        TransactionID: transactionId,
+        Endpoint: 'PUT /resumes/:resumeId/sections/:index',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'VALIDATION_ERROR'
+      });
+      return res.status(400).json({ error: 'content must be provided' });
+    }
 
-  const { data, error } = await supabaseAdmin
-    .from('resumes')
-    .select('sections')
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .maybeSingle();
+    const { data, error } = await supabaseAdmin
+      .from('resumes')
+      .select('sections')
+      .eq('id', resumeId)
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
 
-  if (error || !data) {
-    return res.status(404).json({ error: 'Resume not found' });
-  }
+    if (error || !data) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'PUT /resumes/:resumeId/sections/:index',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
+      });
+      return res.status(404).json({ error: 'Resume not found' });
+    }
 
-  const sections = [...(data.sections as ResumeSection[])];
-  if (!sections[sectionIndex]) {
-    return res.status(404).json({ error: 'Section not found' });
-  }
+    const sections = [...(data.sections as ResumeSection[])];
+    if (!sections[sectionIndex]) {
+      await Logger.logBackendError('Resumes', new Error('Section not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'PUT /resumes/:resumeId/sections/:index',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
+      });
+      return res.status(404).json({ error: 'Section not found' });
+    }
 
   sections[sectionIndex] = {
     ...sections[sectionIndex],
@@ -977,47 +1358,92 @@ resumeRouter.put('/:resumeId/sections/:index', async (req: AuthenticatedRequest,
       .eq('resume_id', resumeId)
       .eq('section_name', sectionHeading);
 
-    if (updateError) return res.status(400).json({ error: updateError.message });
-  } else {
-    const { error: insertError } = await supabaseAdmin
-      .from('resume_ai_reviews')
-      .insert({
-        resume_id: resumeId,
-        section_name: sectionHeading,
-        final_updated: updatedRawBody,  // Store structured data as JSONB
-        raw_data: JSON.stringify(originalRawBody),  // Keep original for reference
-        ai_suggestions_html: '',
+    if (updateError) {
+      await Logger.logBackendError('Resumes', updateError, {
+        TransactionID: transactionId,
+        Endpoint: 'PUT /resumes/:resumeId/sections/:index',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'DATABASE_ERROR'
       });
+      return res.status(400).json({ error: updateError.message });
+    }
+    } else {
+      const { error: insertError } = await supabaseAdmin
+        .from('resume_ai_reviews')
+        .insert({
+          resume_id: resumeId,
+          section_name: sectionHeading,
+          final_updated: updatedRawBody,  // Store structured data as JSONB
+          raw_data: JSON.stringify(originalRawBody),  // Keep original for reference
+          ai_suggestions_html: '',
+        });
 
-    if (insertError) return res.status(400).json({ error: insertError.message });
+      if (insertError) {
+        await Logger.logBackendError('Resumes', insertError, {
+          TransactionID: transactionId,
+          Endpoint: 'PUT /resumes/:resumeId/sections/:index',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'DATABASE_ERROR'
+        });
+        return res.status(400).json({ error: insertError.message });
+      }
+    }
+
+    return res.json({ section: sections[sectionIndex] });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'PUT /resumes/:resumeId/sections/:index',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  return res.json({ section: sections[sectionIndex] });
 });
 
 // POST /:resumeId/sections/:sectionIndex/save-structured
 // Save structured edits (auto-save)
 resumeRouter.post('/:resumeId/sections/:sectionIndex/save-structured', async (req: AuthenticatedRequest, res) => {
-  const { resumeId, sectionIndex } = req.params;
-  const { finalUpdated } = req.body as { finalUpdated: any };
+  const transactionId = `save-structured-${uuid()}`;
+  try {
+    const { resumeId, sectionIndex } = req.params;
+    const { finalUpdated } = req.body as { finalUpdated: any };
 
-  const { data, error } = await supabaseAdmin
-    .from('resumes')
-    .select('sections')
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .maybeSingle();
 
-  if (error || !data) {
-    return res.status(404).json({ error: 'Resume not found' });
-  }
+    const { data, error } = await supabaseAdmin
+      .from('resumes')
+      .select('sections')
+      .eq('id', resumeId)
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
 
-  const sections = data.sections as ResumeSection[];
-  const idx = parseInt(sectionIndex, 10);
+    if (error || !data) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/sections/:sectionIndex/save-structured',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
+      });
+      return res.status(404).json({ error: 'Resume not found' });
+    }
 
-  if (idx < 0 || idx >= sections.length) {
-    return res.status(400).json({ error: 'Invalid section index' });
-  }
+    const sections = data.sections as ResumeSection[];
+    const idx = parseInt(sectionIndex, 10);
+
+    if (idx < 0 || idx >= sections.length) {
+      await Logger.logBackendError('Resumes', new Error('Invalid section index'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/sections/:sectionIndex/save-structured',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'VALIDATION_ERROR'
+      });
+      return res.status(400).json({ error: 'Invalid section index' });
+    }
 
   const sectionHeading = sections[idx].heading;
 
@@ -1037,39 +1463,77 @@ resumeRouter.post('/:resumeId/sections/:sectionIndex/save-structured', async (re
       .eq('section_name', sectionHeading)
       .select(); // Select to ensure the update is committed
 
-    if (updateError) return res.status(400).json({ error: updateError.message });
-  } else {
-    const { error: insertError } = await supabaseAdmin
-      .from('resume_ai_reviews')
-      .insert({
-        resume_id: resumeId,
-        section_name: sectionHeading,
-        final_updated: finalUpdated,
-        ai_suggestions_html: '',
-        tailored_suggestions: null,
+    if (updateError) {
+      await Logger.logBackendError('Resumes', updateError, {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/sections/:sectionIndex/save-structured',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'DATABASE_ERROR'
       });
+      return res.status(400).json({ error: updateError.message });
+    }
+    } else {
+      const { error: insertError } = await supabaseAdmin
+        .from('resume_ai_reviews')
+        .insert({
+          resume_id: resumeId,
+          section_name: sectionHeading,
+          final_updated: finalUpdated,
+          ai_suggestions_html: '',
+          tailored_suggestions: null,
+        });
 
-    if (insertError) return res.status(400).json({ error: insertError.message });
+      if (insertError) {
+        await Logger.logBackendError('Resumes', insertError, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/sections/:sectionIndex/save-structured',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'DATABASE_ERROR'
+        });
+        return res.status(400).json({ error: insertError.message });
+      }
+    }
+
+    await Logger.logInfo('Resumes', 'Structured edits saved successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/sections/:sectionIndex/save-structured',
+      UserID: req.user?.id,
+      RelatedTo: resumeId,
+      Status: 'SUCCESS'
+    });
+
+    return res.json({ success: true });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/sections/:sectionIndex/save-structured',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  return res.json({ success: true });
 });
 
 // POST /:resumeId/sections/:sectionIndex/regenerate-bullet
 // Regenerate a single bullet point
 resumeRouter.post('/:resumeId/sections/:sectionIndex/regenerate-bullet', async (req: AuthenticatedRequest, res) => {
-  const { resumeId, sectionIndex } = req.params;
-  const { bulletId, bulletText, context } = req.body as {
-    bulletId: string;
-    bulletText: string;
-    context: {
-      sectionName: string;
-      company?: string;
-      title?: string;
-      dates?: string;
-      otherBullets?: string[];
+  const transactionId = `regenerate-bullet-${uuid()}`;
+  try {
+    const { resumeId, sectionIndex } = req.params;
+    const { bulletId, bulletText, context } = req.body as {
+      bulletId: string;
+      bulletText: string;
+      context: {
+        sectionName: string;
+        company?: string;
+        title?: string;
+        dates?: string;
+        otherBullets?: string[];
+      };
     };
-  };
 
   if (!bulletText || !context) {
     return res.status(400).json({ error: 'Missing bulletText or context' });
@@ -1081,90 +1545,150 @@ resumeRouter.post('/:resumeId/sections/:sectionIndex/regenerate-bullet', async (
       context,
     });
 
+    await Logger.logInfo('Resumes', 'Bullet regenerated successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/sections/:sectionIndex/regenerate-bullet',
+      UserID: req.user?.id,
+      RelatedTo: resumeId,
+      Status: 'SUCCESS',
+      ResponsePayload: { bulletId, sectionName: context.sectionName }
+    });
+
     return res.json({
       bulletId,
       suggested: result.suggested,
     });
   } catch (err) {
-    return res.status(502).json({
-      error: 'Failed to regenerate bullet',
-      detail: err instanceof Error ? err.message : 'Unknown error',
+      await Logger.logBackendError('Resumes', err, {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/sections/:sectionIndex/regenerate-bullet',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'LLM_ERROR'
+      });
+      return res.status(502).json({
+        error: 'Failed to regenerate bullet',
+        detail: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/sections/:sectionIndex/regenerate-bullet',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
     });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // GET /:resumeId/score - Get resume score (generic or job-specific)
 // Query param: ?jobId=xxx for job-specific score
 resumeRouter.get('/:resumeId/score', async (req: AuthenticatedRequest, res) => {
-  const { resumeId } = req.params;
-  const jobId = req.query.jobId as string | undefined;
-  const scoreType = jobId ? 'job_specific' : 'generic';
+  const transactionId = `get-score-${uuid()}`;
+  try {
+    const { resumeId } = req.params;
+    const jobId = req.query.jobId as string | undefined;
+    const scoreType = jobId ? 'job_specific' : 'generic';
 
-  // Verify resume ownership
-  const { data: resume, error: resumeError } = await supabaseAdmin
-    .from('resumes')
-    .select('*')
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .maybeSingle();
+    // Verify resume ownership
+    const { data: resume, error: resumeError } = await supabaseAdmin
+      .from('resumes')
+      .select('*')
+      .eq('id', resumeId)
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
 
-  if (resumeError || !resume) {
-    return res.status(404).json({ error: 'Resume not found' });
+    if (resumeError || !resume) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'GET /resumes/:resumeId/score',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
+      });
+      return res.status(404).json({ error: 'Resume not found' });
+    }
+
+    // Check for existing score - handle NULL job_id correctly
+    let existingScoreQuery = supabaseAdmin
+      .from('resume_scores')
+      .select('*')
+      .eq('resume_id', resumeId)
+      .eq('score_type', scoreType);
+
+    // For NULL job_id (generic scores), use .is() instead of .eq()
+    if (jobId) {
+      existingScoreQuery = existingScoreQuery.eq('job_id', jobId);
+    } else {
+      existingScoreQuery = existingScoreQuery.is('job_id', null);
+    }
+
+    const { data: existingScore, error: fetchError } = await existingScoreQuery.maybeSingle();
+
+    if (fetchError) {
+      await Logger.logBackendError('Resumes', fetchError, {
+        TransactionID: transactionId,
+        Endpoint: 'GET /resumes/:resumeId/score',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'DATABASE_ERROR',
+        Exception: 'Error fetching existing score'
+      });
+    }
+
+    // Only return existing score - do NOT calculate automatically
+    // Calculation should only happen via POST /calculate-score endpoint
+    if (existingScore) {
+      return res.json({ score: existingScore });
+    }
+
+    // No score exists - return 404 instead of calculating
+   
+    return res.status(404).json({
+      error: 'Score not found. Please calculate the score first using POST /calculate-score',
+      score: null
+    });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'GET /resumes/:resumeId/score',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  // Check for existing score - handle NULL job_id correctly
-  let existingScoreQuery = supabaseAdmin
-    .from('resume_scores')
-    .select('*')
-    .eq('resume_id', resumeId)
-    .eq('score_type', scoreType);
-
-  // For NULL job_id (generic scores), use .is() instead of .eq()
-  if (jobId) {
-    existingScoreQuery = existingScoreQuery.eq('job_id', jobId);
-  } else {
-    existingScoreQuery = existingScoreQuery.is('job_id', null);
-  }
-
-  const { data: existingScore, error: fetchError } = await existingScoreQuery.maybeSingle();
-
-  if (fetchError) {
-    console.error('Error fetching existing score:', fetchError);
-  }
-
-  // Only return existing score - do NOT calculate automatically
-  // Calculation should only happen via POST /calculate-score endpoint
-  if (existingScore) {
-    return res.json({ score: existingScore });
-  }
-
-  // No score exists - return 404 instead of calculating
-  return res.status(404).json({
-    error: 'Score not found. Please calculate the score first using POST /calculate-score',
-    score: null
-  });
 });
 
 // POST /:resumeId/calculate-score - Force recalculation and update score
 // Query param: ?jobId=xxx for job-specific score
 resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest, res) => {
-  const { resumeId } = req.params;
-  const jobId = req.query.jobId as string | undefined;
-  const scoreType = jobId ? 'job_specific' : 'generic';
-
-  // Verify resume ownership
-  const { data: resume, error: resumeError } = await supabaseAdmin
-    .from('resumes')
-    .select('*')
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .maybeSingle();
-
-  if (resumeError || !resume) {
-    return res.status(404).json({ error: 'Resume not found' });
-  }
-
+  const transactionId = `calculate-score-${uuid()}`;
   try {
+    const { resumeId } = req.params;
+    const jobId = req.query.jobId as string | undefined;
+    const scoreType = jobId ? 'job_specific' : 'generic';
+
+    // Verify resume ownership
+    const { data: resume, error: resumeError } = await supabaseAdmin
+      .from('resumes')
+      .select('*')
+      .eq('id', resumeId)
+      .eq('user_id', req.user!.id)
+      .maybeSingle();
+
+    if (resumeError || !resume) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'POST /resumes/:resumeId/calculate-score',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
+      });
+      return res.status(404).json({ error: 'Resume not found' });
+    }
     const { calculateGenericResumeScore } = await import('../services/genericResumeScore');
     const { calculateJobSpecificATSScore } = await import('../services/jobSpecificATSScore');
 
@@ -1180,10 +1704,24 @@ resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest
         .maybeSingle();
 
       if (!job || !job.job_description) {
+        await Logger.logBackendError('Resumes', new Error('Job not found or missing job description'), {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/calculate-score',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'NOT_FOUND'
+        });
         return res.status(404).json({ error: 'Job not found or missing job description' });
       }
 
       if (!job.keywords) {
+        await Logger.logBackendError('Resumes', new Error('Job keywords not extracted'), {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/calculate-score',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'VALIDATION_ERROR'
+        });
         return res.status(400).json({ error: 'Job keywords not extracted. Please extract keywords first.' });
       }
 
@@ -1211,7 +1749,14 @@ resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest
         .eq('job_id', jobId);
 
       if (tailoringsError) {
-        console.error('Error fetching final_updated for score calculation:', tailoringsError);
+        await Logger.logBackendError('Resumes', tailoringsError, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/score',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'DATABASE_ERROR',
+          Exception: 'Error fetching final_updated for score calculation (tailorings)'
+        });
       }
 
       const finalUpdatedBySection: Record<string, any> = {};
@@ -1254,7 +1799,14 @@ resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest
         .eq('resume_id', resumeId);
 
       if (reviewsError) {
-        console.error('Error fetching final_updated for score calculation:', reviewsError);
+        await Logger.logBackendError('Resumes', reviewsError, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/score',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'DATABASE_ERROR',
+          Exception: 'Error fetching final_updated for score calculation (reviews)'
+        });
       }
 
       const finalUpdatedBySection: Record<string, any> = {};
@@ -1319,7 +1871,14 @@ resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest
         .single();
 
       if (updateError) {
-        console.error('Error updating score:', updateError);
+        await Logger.logBackendError('Resumes', updateError, {
+          TransactionID: transactionId,
+          Endpoint: 'POST /resumes/:resumeId/score',
+          UserID: req.user?.id,
+          RelatedTo: resumeId,
+          Status: 'DATABASE_ERROR',
+          Exception: 'Error updating score'
+        });
         return res.status(500).json({
           error: 'Failed to update score',
           detail: updateError.message,
@@ -1345,14 +1904,28 @@ resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest
             // Return existing score instead of error
             storedScore = existingScore;
           } else {
-            console.error('Error inserting score (duplicate but not found):', insertError);
+            await Logger.logBackendError('Resumes', insertError, {
+              TransactionID: transactionId,
+              Endpoint: 'POST /resumes/:resumeId/score',
+              UserID: req.user?.id,
+              RelatedTo: resumeId,
+              Status: 'DATABASE_ERROR',
+              Exception: 'Error inserting score (duplicate but not found)'
+            });
             return res.status(500).json({
               error: 'Failed to store score',
               detail: insertError.message,
             });
           }
         } else {
-          console.error('Error inserting score:', insertError);
+          await Logger.logBackendError('Resumes', insertError, {
+            TransactionID: transactionId,
+            Endpoint: 'POST /resumes/:resumeId/score',
+            UserID: req.user?.id,
+            RelatedTo: resumeId,
+            Status: 'DATABASE_ERROR',
+            Exception: 'Error inserting score'
+          });
           return res.status(500).json({
             error: 'Failed to store score',
             detail: insertError.message,
@@ -1365,7 +1938,13 @@ resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest
 
     return res.json({ score: storedScore });
   } catch (err: any) {
-    console.error('Error calculating score:', err);
+    await Logger.logBackendError('Resumes', err, {
+      TransactionID: transactionId,
+      Endpoint: 'POST /resumes/:resumeId/calculate-score',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'SCORE_ERROR'
+    });
     return res.status(500).json({
       error: 'Failed to calculate score',
       detail: err.message,
@@ -1375,31 +1954,88 @@ resumeRouter.post('/:resumeId/calculate-score', async (req: AuthenticatedRequest
 
 // List resumes
 resumeRouter.get('/', async (req: AuthenticatedRequest, res) => {
-  const { data, error } = await supabaseAdmin
-    .from('resumes')
-    .select('id, original_name, sections, created_at')
-    .eq('user_id', req.user!.id)
-    .eq('removed_by_user', false)
-    .order('created_at', { ascending: false });
+  const transactionId = `list-resumes-${uuid()}`;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('resumes')
+      .select('id, original_name, sections, created_at')
+      .eq('user_id', req.user!.id)
+      .eq('removed_by_user', false)
+      .order('created_at', { ascending: false });
 
-  if (error) return res.status(400).json({ error: error.message });
-  return res.json({ resumes: data });
+    if (error) {
+      await Logger.logBackendError('Resumes', error, {
+        TransactionID: transactionId,
+        Endpoint: 'GET /resumes',
+        UserID: req.user?.id,
+        Status: 'DATABASE_ERROR'
+      });
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ resumes: data });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'GET /resumes',
+      UserID: req.user?.id,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Soft delete resume: set removed_by_user to true
 resumeRouter.delete('/:resumeId', async (req: AuthenticatedRequest, res) => {
-  const { resumeId } = req.params;
+  const transactionId = `delete-resume-${uuid()}`;
+  try {
+    const { resumeId } = req.params;
 
-  const { data, error } = await supabaseAdmin
-    .from('resumes')
-    .update({ removed_by_user: true })
-    .eq('id', resumeId)
-    .eq('user_id', req.user!.id)
-    .select('id')
-    .maybeSingle();
+    const { data, error } = await supabaseAdmin
+      .from('resumes')
+      .update({ removed_by_user: true })
+      .eq('id', resumeId)
+      .eq('user_id', req.user!.id)
+      .select('id')
+      .maybeSingle();
 
-  if (error) return res.status(400).json({ error: error.message });
-  if (!data) return res.status(404).json({ error: 'Resume not found' });
+    if (error) {
+      await Logger.logBackendError('Resumes', error, {
+        TransactionID: transactionId,
+        Endpoint: 'DELETE /resumes/:resumeId',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'DATABASE_ERROR'
+      });
+      return res.status(400).json({ error: error.message });
+    }
+    if (!data) {
+      await Logger.logBackendError('Resumes', new Error('Resume not found'), {
+        TransactionID: transactionId,
+        Endpoint: 'DELETE /resumes/:resumeId',
+        UserID: req.user?.id,
+        RelatedTo: resumeId,
+        Status: 'NOT_FOUND'
+      });
+      return res.status(404).json({ error: 'Resume not found' });
+    }
 
-  return res.json({ success: true });
+    await Logger.logInfo('Resumes', 'Resume soft deleted successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'DELETE /resumes/:resumeId',
+      UserID: req.user?.id,
+      RelatedTo: resumeId,
+      Status: 'SUCCESS'
+    });
+
+    return res.json({ success: true });
+  } catch (error) {
+    await Logger.logBackendError('Resumes', error, {
+      TransactionID: transactionId,
+      Endpoint: 'DELETE /resumes/:resumeId',
+      UserID: req.user?.id,
+      RelatedTo: req.params.resumeId,
+      Status: 'INTERNAL_ERROR'
+    });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });

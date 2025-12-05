@@ -1,5 +1,7 @@
 import fetch from 'node-fetch';
 import { detectLLMProvider, buildLLMHeaders, buildLLMRequestBody, parseLLMResponse } from './llmProvider';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 
 interface RegenerateBulletArgs {
     bulletText: string;
@@ -31,13 +33,22 @@ CRITICAL RULES:
 Return ONLY the improved bullet point text, nothing else.`;
 
 export async function regenerateBulletWithLLM({ bulletText, context }: RegenerateBulletArgs): Promise<RegenerateBulletResponse> {
-    const apiUrl = process.env.LLM_REVIEW_API_URL;
-    const apiKey = process.env.LLM_REVIEW_API_KEY;
-    const model = process.env.LLM_REVIEW_MODEL;
+    const transactionId = `regenerate-bullet-${uuid()}`;
+    try {
+        const apiUrl = process.env.LLM_REVIEW_API_URL;
+        const apiKey = process.env.LLM_REVIEW_API_KEY;
+        const model = process.env.LLM_REVIEW_MODEL;
 
-    if (!apiUrl || !apiKey) {
-        throw new Error('LLM review configuration missing');
-    }
+        
+        if (!apiUrl || !apiKey) {
+            const error = new Error('LLM review configuration missing');
+            await Logger.logBackendError('RegenerateBulletLLM', error, {
+                TransactionID: transactionId,
+                Endpoint: 'regenerateBulletWithLLM',
+                Status: 'CONFIG_ERROR'
+            });
+            throw error;
+        }
 
     // Build context-aware prompt
     let prompt = `${systemInstructions}\n\n`;
@@ -69,29 +80,56 @@ export async function regenerateBulletWithLLM({ bulletText, context }: Regenerat
         body: JSON.stringify(body),
     });
 
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`LLM regeneration failed: ${response.status} - ${text}`);
+        if (!response.ok) {
+            const text = await response.text();
+            const error = new Error(`LLM regeneration failed: ${response.status}`);
+            await Logger.logBackendError('RegenerateBulletLLM', error, {
+                TransactionID: transactionId,
+                Endpoint: 'regenerateBulletWithLLM',
+                Status: 'LLM_ERROR',
+                Exception: text.substring(0, 500)
+            });
+            throw error;
+        }
+
+        const json = await response.json();
+        const textContent = parseLLMResponse(provider, json);
+
+        if (!textContent) {
+            const error = new Error('No response from LLM');
+            await Logger.logBackendError('RegenerateBulletLLM', error, {
+                TransactionID: transactionId,
+                Endpoint: 'regenerateBulletWithLLM',
+                Status: 'LLM_ERROR'
+            });
+            throw error;
+        }
+
+        // Clean up the response (remove quotes, extra whitespace, etc.)
+        let suggested = textContent.trim();
+
+        // Remove surrounding quotes if present
+        if ((suggested.startsWith('"') && suggested.endsWith('"')) ||
+            (suggested.startsWith("'") && suggested.endsWith("'"))) {
+            suggested = suggested.slice(1, -1);
+        }
+
+        // Remove bullet point markers if LLM added them
+        suggested = suggested.replace(/^[•\-*]\s*/, '');
+
+        await Logger.logInfo('RegenerateBulletLLM', 'Bullet regenerated successfully', {
+            TransactionID: transactionId,
+            Endpoint: 'regenerateBulletWithLLM',
+            Status: 'SUCCESS'
+        });
+
+        return { suggested };
+    } catch (error) {
+        await Logger.logBackendError('RegenerateBulletLLM', error, {
+            TransactionID: transactionId,
+            Endpoint: 'regenerateBulletWithLLM',
+            Status: 'INTERNAL_ERROR'
+        });
+        throw error;
     }
-
-    const json = await response.json();
-    const textContent = parseLLMResponse(provider, json);
-
-    if (!textContent) {
-        throw new Error('No response from LLM');
-    }
-
-    // Clean up the response (remove quotes, extra whitespace, etc.)
-    let suggested = textContent.trim();
-
-    // Remove surrounding quotes if present
-    if ((suggested.startsWith('"') && suggested.endsWith('"')) ||
-        (suggested.startsWith("'") && suggested.endsWith("'"))) {
-        suggested = suggested.slice(1, -1);
-    }
-
-    // Remove bullet point markers if LLM added them
-    suggested = suggested.replace(/^[•\-*]\s*/, '');
-
-    return { suggested };
 }

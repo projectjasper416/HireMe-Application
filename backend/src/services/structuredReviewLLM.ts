@@ -1,6 +1,8 @@
 import fetch from 'node-fetch';
 import { v4 as uuidv4 } from 'uuid';
 import { detectLLMProvider, buildLLMHeaders, buildLLMRequestBody, parseLLMResponse } from './llmProvider';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 
 interface StructuredReviewArgs {
     sectionName: string;
@@ -69,13 +71,22 @@ IMPORTANT:
 - Return ONLY valid JSON`;
 
 export async function reviewSectionStructured({ sectionName, rawBody }: StructuredReviewArgs): Promise<StructuredReviewResponse> {
-    const apiUrl = process.env.LLM_REVIEW_API_URL;
-    const apiKey = process.env.LLM_REVIEW_API_KEY;
-    const model = process.env.LLM_REVIEW_MODEL;
+    const transactionId = `review-structured-${uuid()}`;
+    try {
+        const apiUrl = process.env.LLM_REVIEW_API_URL;
+        const apiKey = process.env.LLM_REVIEW_API_KEY;
+        const model = process.env.LLM_REVIEW_MODEL;
 
-    if (!apiUrl || !apiKey) {
-        throw new Error('LLM review configuration missing');
-    }
+
+        if (!apiUrl || !apiKey) {
+            const error = new Error('LLM review configuration missing');
+            await Logger.logBackendError('StructuredReviewLLM', error, {
+                TransactionID: transactionId,
+                Endpoint: 'reviewSectionStructured',
+                Status: 'CONFIG_ERROR'
+            });
+            throw error;
+        }
 
     const sectionLower = sectionName.toLowerCase();
     let sectionType: 'summary' | 'experience' | 'education' | 'skills' | 'other' = 'other';
@@ -108,19 +119,47 @@ Return ONLY valid JSON in the universal format.`;
         body: JSON.stringify(body),
     });
 
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`LLM review failed: ${response.status} - ${text}`);
+        if (!response.ok) {
+            const text = await response.text();
+            const error = new Error(`LLM review failed: ${response.status}`);
+            await Logger.logBackendError('StructuredReviewLLM', error, {
+                TransactionID: transactionId,
+                Endpoint: 'reviewSectionStructured',
+                Status: 'LLM_ERROR',
+                Exception: text.substring(0, 500)
+            });
+            throw error;
+        }
+
+        const json = await response.json();
+        const textContent = parseLLMResponse(provider, json);
+
+        if (!textContent) {
+            const error = new Error('No response from LLM');
+            await Logger.logBackendError('StructuredReviewLLM', error, {
+                TransactionID: transactionId,
+                Endpoint: 'reviewSectionStructured',
+                Status: 'LLM_ERROR'
+            });
+            throw error;
+        }
+
+        await Logger.logInfo('StructuredReviewLLM', 'Section reviewed successfully', {
+            TransactionID: transactionId,
+            Endpoint: 'reviewSectionStructured',
+            Status: 'SUCCESS',
+            RelatedTo: sectionName
+        });
+
+        return parseStructuredResponse(textContent, sectionName, sectionType, rawBody);
+    } catch (error) {
+        await Logger.logBackendError('StructuredReviewLLM', error, {
+            TransactionID: transactionId,
+            Endpoint: 'reviewSectionStructured',
+            Status: 'INTERNAL_ERROR'
+        });
+        throw error;
     }
-
-    const json = await response.json();
-    const textContent = parseLLMResponse(provider, json);
-
-    if (!textContent) {
-        throw new Error('No response from LLM');
-    }
-
-    return parseStructuredResponse(textContent, sectionName, sectionType, rawBody);
 }
 
 function parseStructuredResponse(
@@ -142,7 +181,7 @@ function parseStructuredResponse(
         try {
             parsed = JSON.parse(textContent);
         } catch (e) {
-            console.warn('[reviewSectionStructured] Failed to parse, using fallback');
+            // Fallback - no logging here as transactionId is not available
             return buildFallbackResponse(sectionName, sectionType, rawBody);
         }
     }

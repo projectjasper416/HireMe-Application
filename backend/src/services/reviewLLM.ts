@@ -1,5 +1,7 @@
 import fetch from 'node-fetch';
 import { detectLLMProvider, buildLLMHeaders, buildLLMRequestBody, parseLLMResponse } from './llmProvider';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 
 interface ReviewArgs {
   sectionName: string;
@@ -43,13 +45,22 @@ const systemInstructions = `You are a professional resume editor and ATS optimiz
 - Keep whitespace and sentence order exactly as provided.`;
 
 export async function reviewSectionWithLLM({ sectionName, content }: ReviewArgs): Promise<ReviewResponse> {
-  const apiUrl = process.env.LLM_REVIEW_API_URL;
-  const apiKey = process.env.LLM_REVIEW_API_KEY;
-  const model = process.env.LLM_REVIEW_MODEL;
+  const transactionId = `review-section-${uuid()}`;
+  try {
+    const apiUrl = process.env.LLM_REVIEW_API_URL;
+    const apiKey = process.env.LLM_REVIEW_API_KEY;
+    const model = process.env.LLM_REVIEW_MODEL;
 
-  if (!apiUrl || !apiKey) {
-    throw new Error('LLM review configuration missing (LLM_REVIEW_API_URL / LLM_REVIEW_API_KEY).');
-  }
+
+    if (!apiUrl || !apiKey) {
+      const error = new Error('LLM review configuration missing (LLM_REVIEW_API_URL / LLM_REVIEW_API_KEY).');
+      await Logger.logBackendError('ReviewLLM', error, {
+        TransactionID: transactionId,
+        Endpoint: 'reviewSectionWithLLM',
+        Status: 'CONFIG_ERROR'
+      });
+      throw error;
+    }
 
   // Auto-detect provider based on URL or API key format
   const provider = detectLLMProvider(apiUrl, apiKey);
@@ -67,62 +78,108 @@ export async function reviewSectionWithLLM({ sectionName, content }: ReviewArgs)
     body: JSON.stringify(body),
   });
 
-  const raw = await response.text();
+    const raw = await response.text();
 
-  if (!response.ok) {
-    throw new Error(`Review LLM failed with status ${response.status}: ${raw}`);
-  }
-
-  try {
-    const json = JSON.parse(raw) as any;
-
-    // Check for direct review_html in response (unlikely but possible)
-    if (json?.review_html) {
-      return normalizeReview(sectionName, json as ReviewResponse);
+    if (!response.ok) {
+      const error = new Error(`Review LLM failed with status ${response.status}`);
+      await Logger.logBackendError('ReviewLLM', error, {
+        TransactionID: transactionId,
+        Endpoint: 'reviewSectionWithLLM',
+        Status: 'LLM_ERROR',
+        Exception: raw.substring(0, 500)
+      });
+      throw error;
     }
 
-    // Extract text content using provider-specific parsing
-    const textContent = parseLLMResponse(provider, json);
-    
-    if (textContent) {
-      const blocks = extractJsonBlocks(textContent);
-      for (const block of blocks) {
-        try {
-          const parsed = JSON.parse(block) as ReviewResponse;
-          if (parsed?.review_html) {
-            return normalizeReview(sectionName, parsed);
+    try {
+      const json = JSON.parse(raw) as any;
+
+      // Check for direct review_html in response (unlikely but possible)
+      if (json?.review_html) {
+        await Logger.logInfo('ReviewLLM', 'Section reviewed successfully', {
+          TransactionID: transactionId,
+          Endpoint: 'reviewSectionWithLLM',
+          Status: 'SUCCESS',
+          RelatedTo: sectionName
+        });
+        return normalizeReview(sectionName, json as ReviewResponse);
+      }
+
+      // Extract text content using provider-specific parsing
+      const textContent = parseLLMResponse(provider, json);
+      
+      if (textContent) {
+        const blocks = extractJsonBlocks(textContent);
+        for (const block of blocks) {
+          try {
+            const parsed = JSON.parse(block) as ReviewResponse;
+            if (parsed?.review_html) {
+              await Logger.logInfo('ReviewLLM', 'Section reviewed successfully', {
+                TransactionID: transactionId,
+                Endpoint: 'reviewSectionWithLLM',
+                Status: 'SUCCESS',
+                RelatedTo: sectionName
+              });
+              return normalizeReview(sectionName, parsed);
+            }
+          } catch {
+            continue;
           }
-        } catch {
-          continue;
         }
       }
-    }
 
-    // Fallback: try parsing Google Gemini format directly
-    const candidates = Array.isArray(json?.candidates) ? json.candidates : [];
-    for (const candidate of candidates) {
-      const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
-      for (const part of parts) {
-        if (typeof part?.text === 'string') {
-          const blocks = extractJsonBlocks(part.text);
-          for (const block of blocks) {
-            try {
-              const parsed = JSON.parse(block) as ReviewResponse;
-              if (parsed?.review_html) {
-                return normalizeReview(sectionName, parsed);
+      // Fallback: try parsing Google Gemini format directly
+      const candidates = Array.isArray(json?.candidates) ? json.candidates : [];
+      for (const candidate of candidates) {
+        const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+        for (const part of parts) {
+          if (typeof part?.text === 'string') {
+            const blocks = extractJsonBlocks(part.text);
+            for (const block of blocks) {
+              try {
+                const parsed = JSON.parse(block) as ReviewResponse;
+                if (parsed?.review_html) {
+                  await Logger.logInfo('ReviewLLM', 'Section reviewed successfully', {
+                    TransactionID: transactionId,
+                    Endpoint: 'reviewSectionWithLLM',
+                    Status: 'SUCCESS',
+                    RelatedTo: sectionName
+                  });
+                  return normalizeReview(sectionName, parsed);
+                }
+              } catch {
+                continue;
               }
-            } catch {
-              continue;
             }
           }
         }
       }
+    } catch (err) {
+      await Logger.logBackendError('ReviewLLM', err as Error, {
+        TransactionID: transactionId,
+        Endpoint: 'reviewSectionWithLLM',
+        Status: 'PARSE_ERROR',
+        Exception: raw.substring(0, 500)
+      });
+      throw new Error(`Review LLM returned invalid JSON: ${raw}`);
     }
-  } catch (err) {
-    throw new Error(`Review LLM returned invalid JSON: ${raw}`);
-  }
 
-  throw new Error(`Review LLM did not return suggestions: ${raw}`);
+    const error = new Error(`Review LLM did not return suggestions`);
+    await Logger.logBackendError('ReviewLLM', error, {
+      TransactionID: transactionId,
+      Endpoint: 'reviewSectionWithLLM',
+      Status: 'PARSE_ERROR',
+      Exception: raw.substring(0, 500)
+    });
+    throw error;
+  } catch (error) {
+    await Logger.logBackendError('ReviewLLM', error, {
+      TransactionID: transactionId,
+      Endpoint: 'reviewSectionWithLLM',
+      Status: 'INTERNAL_ERROR'
+    });
+    throw error;
+  }
 }
 
 

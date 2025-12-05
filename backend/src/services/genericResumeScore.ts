@@ -5,6 +5,8 @@
  */
 
 import type { ResumeRecord } from '../types/resume';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 import {
   extractResumeText,
   extractAllBullets,
@@ -481,45 +483,57 @@ export async function calculateGenericResumeScore(
   resume: ResumeRecord,
   finalUpdatedBySection?: Record<string, any>
 ): Promise<GenericResumeScore> {
-  // Extract all text and structured data
-  const fullText = extractResumeText(resume, finalUpdatedBySection).toLowerCase();
-  const bullets = extractAllBullets(resume, finalUpdatedBySection);
-  const contactInfo = extractContactInfo(resume, finalUpdatedBySection);
+  const transactionId = `calculate-generic-score-${uuid()}`;
+  try {
+    
+    // Extract all text and structured data
+    const fullText = extractResumeText(resume, finalUpdatedBySection).toLowerCase();
+    const bullets = extractAllBullets(resume, finalUpdatedBySection);
+    const contactInfo = extractContactInfo(resume, finalUpdatedBySection);
 
-  // Calculate each breakdown
-  const atsOptimization = calculateATSOptimization(resume, fullText, contactInfo);
-  const contentQuality = calculateContentQuality(resume, fullText, bullets, finalUpdatedBySection);
-  const structureCompleteness = calculateStructureCompleteness(resume);
-  const formattingQuality = calculateFormattingQuality(resume);
-  const actionVerbsUsage = calculateActionVerbsUsage(bullets);
+    // Calculate each breakdown
+    const atsOptimization = calculateATSOptimization(resume, fullText, contactInfo);
+    const contentQuality = calculateContentQuality(resume, fullText, bullets, finalUpdatedBySection);
+    const structureCompleteness = calculateStructureCompleteness(resume);
+    const formattingQuality = calculateFormattingQuality(resume);
+    const actionVerbsUsage = calculateActionVerbsUsage(bullets);
 
-  // Calculate overall score
-  const overallScore = Math.round(
-    atsOptimization.score +
-      contentQuality.score +
-      structureCompleteness.score +
-      formattingQuality.score +
-      actionVerbsUsage.score
-  );
+    // Calculate overall score
+    const overallScore = Math.round(
+      atsOptimization.score +
+        contentQuality.score +
+        structureCompleteness.score +
+        formattingQuality.score +
+        actionVerbsUsage.score
+    );
 
-  const score: GenericResumeScore = {
-    overallScore,
-    breakdown: {
-      atsOptimization,
-      contentQuality,
-      structureCompleteness,
-      formattingQuality,
-      actionVerbsUsage,
-    },
-    suggestions: [],
-    improvementAreas: [],
-  };
+    const score: GenericResumeScore = {
+      overallScore,
+      breakdown: {
+        atsOptimization,
+        contentQuality,
+        structureCompleteness,
+        formattingQuality,
+        actionVerbsUsage,
+      },
+      suggestions: [],
+      improvementAreas: [],
+    };
 
-  // Generate suggestions
-  const { suggestions, improvementAreas } = generateSuggestions(score);
-  score.suggestions = suggestions;
-  score.improvementAreas = improvementAreas;
+    // Generate suggestions
+    const { suggestions, improvementAreas } = generateSuggestions(score);
+    score.suggestions = suggestions;
+    score.improvementAreas = improvementAreas;
 
-  return score;
+    return score;
+  } catch (error) {
+    await Logger.logBackendError('GenericResumeScore', error, {
+      TransactionID: transactionId,
+      Endpoint: 'calculateGenericResumeScore',
+      RelatedTo: resume.id,
+      Status: 'INTERNAL_ERROR'
+    });
+    throw error;
+  }
 }
 

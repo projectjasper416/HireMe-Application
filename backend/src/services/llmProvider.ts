@@ -4,6 +4,9 @@
  * Provides unified interface for making LLM requests regardless of provider
  */
 
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
+
 export type LLMProvider = 'openai' | 'google' | 'anthropic';
 
 export interface LLMRequestConfig {
@@ -242,34 +245,64 @@ export async function makeLLMRequest(
   config: LLMRequestConfig,
   options: LLMRequestOptions
 ): Promise<LLMResponse> {
-  const provider = detectLLMProvider(config.apiUrl, config.apiKey);
-  const headers = buildLLMHeaders(provider, config.apiKey);
-  const body = buildLLMRequestBody(provider, config, options);
-
-  const response = await fetch(config.apiUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    const raw = await response.text();
-    throw new Error(`LLM request failed with status ${response.status}: ${raw}`);
-  }
-
-  const raw = await response.text();
-  let json: any;
+  const transactionId = `llm-request-${uuid()}`;
   try {
-    json = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(`LLM returned invalid JSON: ${raw}`);
+    const provider = detectLLMProvider(config.apiUrl, config.apiKey);
+    
+    const headers = buildLLMHeaders(provider, config.apiKey);
+    const body = buildLLMRequestBody(provider, config, options);
+
+    const response = await fetch(config.apiUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const raw = await response.text();
+      await Logger.logBackendError('LLMProvider', new Error(`LLM request failed with status ${response.status}`), {
+        TransactionID: transactionId,
+        Endpoint: 'makeLLMRequest',
+        Status: 'LLM_ERROR',
+        Exception: raw.substring(0, 500)
+      });
+      throw new Error(`LLM request failed with status ${response.status}: ${raw}`);
+    }
+
+    const raw = await response.text();
+    let json: any;
+    try {
+      json = JSON.parse(raw);
+    } catch (err) {
+      await Logger.logBackendError('LLMProvider', err as Error, {
+        TransactionID: transactionId,
+        Endpoint: 'makeLLMRequest',
+        Status: 'PARSE_ERROR',
+        Exception: 'Failed to parse LLM response as JSON'
+      });
+      throw new Error(`LLM returned invalid JSON: ${raw}`);
+    }
+
+    const text = parseLLMResponse(provider, json);
+
+    await Logger.logInfo('LLMProvider', 'LLM request successful', {
+      TransactionID: transactionId,
+      Endpoint: 'makeLLMRequest',
+      Status: 'SUCCESS',
+      ResponsePayload: { textLength: text.length }
+    });
+
+    return {
+      text,
+      raw: json,
+    };
+  } catch (error) {
+    await Logger.logBackendError('LLMProvider', error, {
+      TransactionID: transactionId,
+      Endpoint: 'makeLLMRequest',
+      Status: 'INTERNAL_ERROR'
+    });
+    throw error;
   }
-
-  const text = parseLLMResponse(provider, json);
-
-  return {
-    text,
-    raw: json,
-  };
 }
 

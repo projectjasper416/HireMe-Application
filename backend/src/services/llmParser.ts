@@ -1,6 +1,8 @@
 import fetch from 'node-fetch';
 import type { ResumeSection } from '../types/resume';
 import { detectLLMProvider, buildLLMHeaders, buildLLMRequestBody, parseLLMResponse } from './llmProvider';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 
 type FetchResponse = Awaited<ReturnType<typeof fetch>>;
 
@@ -305,13 +307,22 @@ function extractSectionsFromResponse(json: any): ResumeSection[] | null {
 
 // TDD 5 AI/LLM Service Layer: dedicated resume parsing LLM (cheaper tier)
 export async function parseResumeWithLLM({ fileBase64 }: ParseArgs): Promise<ResumeSection[]> {
-  const apiUrl = process.env.LLM_PARSE_API_URL;
-  const apiKey = process.env.LLM_PARSE_API_KEY;
-  const model = process.env.LLM_PARSE_MODEL;
+  const transactionId = `parse-resume-${uuid()}`;
+  try {
+    const apiUrl = process.env.LLM_PARSE_API_URL;
+    const apiKey = process.env.LLM_PARSE_API_KEY;
+    const model = process.env.LLM_PARSE_MODEL;
 
-  if (!apiUrl || !apiKey) {
-    throw new Error('LLM parsing configuration missing (LLM_PARSE_API_URL / LLM_PARSE_API_KEY).');
-  }
+    
+    if (!apiUrl || !apiKey) {
+      const error = new Error('LLM parsing configuration missing (LLM_PARSE_API_URL / LLM_PARSE_API_KEY).');
+      await Logger.logBackendError('LLMParser', error, {
+        TransactionID: transactionId,
+        Endpoint: 'parseResumeWithLLM',
+        Status: 'CONFIG_ERROR'
+      });
+      throw error;
+    }
 
   // Auto-detect provider based on URL or API key format
   const provider = detectLLMProvider(apiUrl, apiKey);
@@ -330,53 +341,102 @@ export async function parseResumeWithLLM({ fileBase64 }: ParseArgs): Promise<Res
     headers,
     body: JSON.stringify(body),
   });
-//console.log('[parseResumeWithLLM] Response:', JSON.stringify(response));  
+  
   if (!response) {
-    throw new Error('Parsing LLM request failed without receiving a response.');
+    const error = new Error('Parsing LLM request failed without receiving a response.');
+    await Logger.logBackendError('LLMParser', error, {
+      TransactionID: transactionId,
+      Endpoint: 'parseResumeWithLLM',
+      Status: 'LLM_ERROR',
+      Exception: 'No response received from LLM API'
+    });
+    throw error;
   }
 
-  const raw = await response.text();
+    const raw = await response.text();
 
-  if (!response.ok) {
-    throw new Error(`Parsing LLM failed with status ${response.status}: ${raw}`);
-  }
+    if (!response.ok) {
+      const error = new Error(`Parsing LLM failed with status ${response.status}`);
+      await Logger.logBackendError('LLMParser', error, {
+        TransactionID: transactionId,
+        Endpoint: 'parseResumeWithLLM',
+        Status: 'LLM_ERROR',
+        Exception: raw.substring(0, 500)
+      });
+      throw error;
+    }
 
-  let json: any;
-  try {
-    json = JSON.parse(raw);
-    //console.log('[parseResumeWithLLM] JSON:', JSON.stringify(json));
-  } catch (err) {
-    throw new Error(`Parsing LLM returned invalid JSON: ${raw}`);
-  }
+    let json: any;
+    try {
+      json = JSON.parse(raw);
+    } catch (err) {
+      const error = new Error(`Parsing LLM returned invalid JSON`);
+      await Logger.logBackendError('LLMParser', err as Error, {
+        TransactionID: transactionId,
+        Endpoint: 'parseResumeWithLLM',
+        Status: 'PARSE_ERROR',
+        Exception: raw.substring(0, 500)
+      });
+      throw error;
+    }
 
-  // Extract text content using provider-specific parsing
-  const textContent = parseLLMResponse(provider, json);
+    // Extract text content using provider-specific parsing
+    const textContent = parseLLMResponse(provider, json);
 
-  if (textContent) {
-    const sections = extractSectionsFromCandidateText(textContent);
+    if (textContent) {
+      const sections = extractSectionsFromCandidateText(textContent);
+      if (sections && sections.length > 0) {
+        await Logger.logInfo('LLMParser', 'Resume parsed successfully', {
+          TransactionID: transactionId,
+          Endpoint: 'parseResumeWithLLM',
+          Status: 'SUCCESS',
+          ResponsePayload: { sectionsCount: sections.length }
+        });
+        return sections;
+      }
+    }
+
+    // Fallback: try parsing the whole response (for Google format)
+    const sections = extractSectionsFromResponse(json);
     if (sections && sections.length > 0) {
+      await Logger.logInfo('LLMParser', 'Resume parsed successfully (fallback)', {
+        TransactionID: transactionId,
+        Endpoint: 'parseResumeWithLLM',
+        Status: 'SUCCESS',
+        ResponsePayload: { sectionsCount: sections.length }
+      });
       return sections;
     }
-  }
 
-  // Fallback: try parsing the whole response (for Google format)
-  const sections = extractSectionsFromResponse(json);
-  if (sections && sections.length > 0) {
-    return sections;
+    const error = new Error(`Parsing LLM returned no sections`);
+    await Logger.logBackendError('LLMParser', error, {
+      TransactionID: transactionId,
+      Endpoint: 'parseResumeWithLLM',
+      Status: 'PARSE_ERROR',
+      Exception: raw.substring(0, 500)
+    });
+    throw error;
+  } catch (error) {
+    await Logger.logBackendError('LLMParser', error, {
+      TransactionID: transactionId,
+      Endpoint: 'parseResumeWithLLM',
+      Status: 'INTERNAL_ERROR'
+    });
+    throw error;
   }
-
-  throw new Error(`Parsing LLM returned no sections. Raw response: ${raw}`);
 }
 
 export async function extractContactSectionWithLLM({ fileBase64 }: ParseArgs): Promise<ResumeSection | null> {
-  const apiUrl = process.env.LLM_PARSE_API_URL;
-  const apiKey = process.env.LLM_PARSE_API_KEY;
-  const model = process.env.LLM_PARSE_MODEL;
+  const transactionId = `extract-contact-${uuid()}`;
+  try {
+    const apiUrl = process.env.LLM_PARSE_API_URL;
+    const apiKey = process.env.LLM_PARSE_API_KEY;
+    const model = process.env.LLM_PARSE_MODEL;
 
-  if (!apiUrl || !apiKey) {
-    console.warn('LLM parsing configuration missing for contact extraction. Skipping LLM call.');
-    return null;
-  }
+    if (!apiUrl || !apiKey) {
+      
+      return null;
+    }
 
   // Auto-detect provider based on URL or API key format
   const provider = detectLLMProvider(apiUrl, apiKey);
@@ -394,41 +454,70 @@ export async function extractContactSectionWithLLM({ fileBase64 }: ParseArgs): P
     body: JSON.stringify(body),
   });
 
-  const raw = await response.text();
+    const raw = await response.text();
 
-  if (!response.ok) {
-    console.error(`Contact extraction LLM failed with status ${response.status}: ${raw}`);
-    return null;
-  }
-
-  let json: any;
-  try {
-    json = JSON.parse(raw);
-  } catch (err) {
-    console.error(`Contact extraction LLM returned invalid JSON: ${raw}`);
-    return null;
-  }
-
-  // Extract text content using provider-specific parsing
-  const textContent = parseLLMResponse(provider, json);
-
-  if (textContent) {
-    const sections = extractSectionsFromCandidateText(textContent);
-    if (sections && sections.length > 0) {
-      const contact = sections.find((section) => section.heading.toLowerCase().includes('contact')) ?? sections[0];
-      return contact ?? null;
+    if (!response.ok) {
+      await Logger.logBackendError('LLMParser', new Error(`Contact extraction LLM failed with status ${response.status}`), {
+        TransactionID: transactionId,
+        Endpoint: 'extractContactSectionWithLLM',
+        Status: 'LLM_ERROR',
+        Exception: raw.substring(0, 500)
+      });
+      return null;
     }
-  }
 
-  // Fallback: try parsing the whole response (for Google format)
-  const sections = extractSectionsFromResponse(json);
-  if (!sections || sections.length === 0) {
+    let json: any;
+    try {
+      json = JSON.parse(raw);
+    } catch (err) {
+      await Logger.logBackendError('LLMParser', err as Error, {
+        TransactionID: transactionId,
+        Endpoint: 'extractContactSectionWithLLM',
+        Status: 'PARSE_ERROR',
+        Exception: raw.substring(0, 500)
+      });
+      return null;
+    }
+
+    // Extract text content using provider-specific parsing
+    const textContent = parseLLMResponse(provider, json);
+
+    if (textContent) {
+      const sections = extractSectionsFromCandidateText(textContent);
+      if (sections && sections.length > 0) {
+        const contact = sections.find((section) => section.heading.toLowerCase().includes('contact')) ?? sections[0];
+        await Logger.logInfo('LLMParser', 'Contact section extracted successfully', {
+          TransactionID: transactionId,
+          Endpoint: 'extractContactSectionWithLLM',
+          Status: 'SUCCESS'
+        });
+        return contact ?? null;
+      }
+    }
+
+    // Fallback: try parsing the whole response (for Google format)
+    const sections = extractSectionsFromResponse(json);
+    if (!sections || sections.length === 0) {
+      await Logger.logInfo('LLMParser', 'No contact section found', {
+        TransactionID: transactionId,
+        Endpoint: 'extractContactSectionWithLLM',
+        Status: 'NOT_FOUND'
+      });
+      return null;
+    }
+
+    const contact =
+      sections.find((section) => section.heading.toLowerCase().includes('contact')) ?? sections[0];
+
+    return contact ?? null;
+  } catch (error) {
+    await Logger.logBackendError('LLMParser', error, {
+      TransactionID: transactionId,
+      Endpoint: 'extractContactSectionWithLLM',
+      Status: 'INTERNAL_ERROR'
+    });
     return null;
   }
-
-  const contact =
-    sections.find((section) => section.heading.toLowerCase().includes('contact')) ?? sections[0];
-  return contact ?? null;
 }
 
 interface ExportFormatResponse {

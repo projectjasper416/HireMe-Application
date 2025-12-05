@@ -58,7 +58,7 @@ export class Logger {
         });
     }
 
-    static async logError(
+    static async logBackendError(
         category: string,
         error: any,
         metadata?: Partial<LogEntry>
@@ -66,6 +66,22 @@ export class Logger {
         await this.log({
             Category: category,
             Status: 'ERROR',
+            Endpoint: metadata?.Endpoint || category,
+            Exception: error instanceof Error ? error.message : String(error),
+            ExceptionStackTrace: error instanceof Error ? error.stack : undefined,
+            ...metadata,
+        });
+    }
+
+    static async logFrontendError(
+        category: string,
+        error: any,
+        metadata?: Partial<LogEntry>
+    ) {
+        await this.log({
+            Category: category,
+            Status: 'ERROR',
+            Endpoint: metadata?.Endpoint || 'Frontend',
             Exception: error instanceof Error ? error.message : String(error),
             ExceptionStackTrace: error instanceof Error ? error.stack : undefined,
             ...metadata,

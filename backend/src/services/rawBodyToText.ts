@@ -3,9 +3,32 @@
  * Used when sending data to frontend which expects text format
  */
 
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
+
 export function rawBodyToText(rawBody: any): string {
     if (!rawBody || typeof rawBody !== 'object') {
         return typeof rawBody === 'string' ? rawBody : '';
+    }
+
+    // Log if we encounter an unexpected structure that we can't process
+    const hasUnexpectedStructure = 
+        !Array.isArray(rawBody) && 
+        !rawBody.summary && 
+        !rawBody.entries && 
+        typeof rawBody === 'object' &&
+        Object.keys(rawBody).length > 0;
+
+    if (hasUnexpectedStructure) {
+        const transactionId = `rawbody-transform-${uuid()}`;
+        Logger.logBackendError('RawBodyTransform', new Error('Unexpected raw_body structure in rawBodyToText'), {
+            TransactionID: transactionId,
+            Endpoint: 'rawBodyToText',
+            Status: 'DATA_ERROR',
+            Exception: `Unexpected structure: ${JSON.stringify(Object.keys(rawBody)).substring(0, 200)}`
+        }).catch(() => {
+            // Ignore logging errors
+        });
     }
 
     const lines: string[] = [];

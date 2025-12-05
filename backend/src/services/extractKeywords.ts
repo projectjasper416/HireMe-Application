@@ -1,5 +1,7 @@
 import fetch from 'node-fetch';
 import { detectLLMProvider, buildLLMHeaders, buildLLMRequestBody, parseLLMResponse } from './llmProvider';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 
 export interface KeywordCategory {
   category: string;
@@ -73,13 +75,22 @@ Important:
 export async function extractKeywordsFromJobDescription(
   jobDescription: string
 ): Promise<ExtractedKeywords> {
-  const apiUrl = process.env.LLM_KEYWORDS_API_URL || process.env.LLM_REVIEW_API_URL || process.env.LLM_PARSE_API_URL;
-  const apiKey = process.env.LLM_KEYWORDS_API_KEY || process.env.LLM_REVIEW_API_KEY || process.env.LLM_PARSE_API_KEY;
-  const model = process.env.LLM_KEYWORDS_MODEL || process.env.LLM_REVIEW_MODEL || process.env.LLM_PARSE_MODEL;
+  const transactionId = `extract-keywords-${uuid()}`;
+  try {
+    const apiUrl = process.env.LLM_KEYWORDS_API_URL || process.env.LLM_REVIEW_API_URL || process.env.LLM_PARSE_API_URL;
+    const apiKey = process.env.LLM_KEYWORDS_API_KEY || process.env.LLM_REVIEW_API_KEY || process.env.LLM_PARSE_API_KEY;
+    const model = process.env.LLM_KEYWORDS_MODEL || process.env.LLM_REVIEW_MODEL || process.env.LLM_PARSE_MODEL;
 
-  if (!apiUrl || !apiKey) {
-    throw new Error('LLM keywords extraction configuration missing (LLM_KEYWORDS_API_URL / LLM_KEYWORDS_API_KEY). You can also use LLM_REVIEW_API_URL/KEY or LLM_PARSE_API_URL/KEY as fallback.');
-  }
+
+    if (!apiUrl || !apiKey) {
+      const error = new Error('LLM keywords extraction configuration missing (LLM_KEYWORDS_API_URL / LLM_KEYWORDS_API_KEY). You can also use LLM_REVIEW_API_URL/KEY or LLM_PARSE_API_URL/KEY as fallback.');
+      await Logger.logBackendError('ExtractKeywords', error, {
+        TransactionID: transactionId,
+        Endpoint: 'extractKeywordsFromJobDescription',
+        Status: 'CONFIG_ERROR'
+      });
+      throw error;
+    }
 
   const provider = detectLLMProvider(apiUrl, apiKey);
   const headers = buildLLMHeaders(provider, apiKey);
@@ -91,96 +102,175 @@ export async function extractKeywordsFromJobDescription(
     maxTokens: 2048,
   });
 
-  let response: any;
-  let raw: string;
+    let response: any;
+    let raw: string;
 
-  try {
-    response = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
+    try {
+      response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      raw = await response.text();
+
+      if (!response.ok) {
+        await Logger.logBackendError('ExtractKeywords', new Error(`LLM failed with status ${response.status}`), {
+          TransactionID: transactionId,
+          Endpoint: 'extractKeywordsFromJobDescription',
+          Status: 'LLM_ERROR',
+          Exception: raw.substring(0, 500)
+        });
+        throw new Error(`Keywords extraction LLM failed with status ${response.status}: ${raw}`);
+      }
+    } catch (err: any) {
+      if (err.message?.includes('503') || err.message?.includes('overload')) {
+        await Logger.logInfo('ExtractKeywords', 'Retrying after overload', {
+          TransactionID: transactionId,
+          Endpoint: 'extractKeywordsFromJobDescription',
+          Status: 'RETRY'
+        });
+        // Retry once for overloaded services
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        try {
+          response = await fetch(apiUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+          });
+          raw = await response.text();
+          if (!response.ok) {
+            await Logger.logBackendError('ExtractKeywords', new Error(`LLM retry failed with status ${response.status}`), {
+              TransactionID: transactionId,
+              Endpoint: 'extractKeywordsFromJobDescription',
+              Status: 'LLM_ERROR',
+              Exception: raw.substring(0, 500)
+            });
+            throw new Error(`Keywords extraction LLM failed with status ${response.status}: ${raw}`);
+          }
+        } catch (retryErr: any) {
+          await Logger.logBackendError('ExtractKeywords', retryErr, {
+            TransactionID: transactionId,
+            Endpoint: 'extractKeywordsFromJobDescription',
+            Status: 'LLM_ERROR',
+            Exception: 'Retry failed'
+          });
+          throw new Error(`Keywords extraction LLM request failed: ${retryErr.message}`);
+        }
+      } else {
+        await Logger.logBackendError('ExtractKeywords', err, {
+          TransactionID: transactionId,
+          Endpoint: 'extractKeywordsFromJobDescription',
+          Status: 'LLM_ERROR',
+          Exception: 'Request failed'
+        });
+        throw new Error(`Keywords extraction LLM request failed: ${err.message}`);
+      }
+    }
+
+    let json: any;
+    try {
+      json = JSON.parse(raw);
+    } catch (parseErr) {
+      // Try to extract JSON from code blocks or wrapped responses
+      const jsonMatch = raw.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || raw.match(/(\{[\s\S]*\})/);
+      if (jsonMatch) {
+        try {
+          json = JSON.parse(jsonMatch[1]);
+        } catch (e) {
+          const error = new Error(`Keywords extraction LLM returned invalid JSON: ${raw.substring(0, 500)}`);
+          await Logger.logBackendError('ExtractKeywords', error, {
+            TransactionID: transactionId,
+            Endpoint: 'extractKeywordsFromJobDescription',
+            Status: 'PARSE_ERROR',
+            Exception: 'Failed to parse JSON from response'
+          });
+          throw error;
+        }
+      } else {
+        const error = new Error(`Keywords extraction LLM returned invalid JSON: ${raw.substring(0, 500)}`);
+        await Logger.logBackendError('ExtractKeywords', error, {
+          TransactionID: transactionId,
+          Endpoint: 'extractKeywordsFromJobDescription',
+          Status: 'PARSE_ERROR',
+          Exception: 'No JSON found in response'
+        });
+        throw error;
+      }
+    }
+
+    // Extract text content from provider-specific response structure
+    const textContent = parseLLMResponse(provider, json);
+
+    // Try to parse the text content as JSON
+    let extractedData: ExtractedKeywords;
+    try {
+      extractedData = JSON.parse(textContent);
+    } catch (e) {
+      // Try to extract JSON from code blocks
+      const jsonMatch = textContent.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || textContent.match(/(\{[\s\S]*\})/);
+      if (jsonMatch) {
+        extractedData = JSON.parse(jsonMatch[1]);
+      } else {
+        const error = new Error(`Keywords extraction LLM did not return valid JSON structure: ${textContent.substring(0, 500)}`);
+        await Logger.logBackendError('ExtractKeywords', error, {
+          TransactionID: transactionId,
+          Endpoint: 'extractKeywordsFromJobDescription',
+          Status: 'PARSE_ERROR',
+          Exception: 'Failed to parse text content as JSON'
+        });
+        throw error;
+      }
+    }
+
+    // Validate structure
+    if (!extractedData.categories || !Array.isArray(extractedData.categories)) {
+      const error = new Error(`Keywords extraction LLM returned invalid structure. Expected categories array: ${JSON.stringify(extractedData)}`);
+      await Logger.logBackendError('ExtractKeywords', error, {
+        TransactionID: transactionId,
+        Endpoint: 'extractKeywordsFromJobDescription',
+        Status: 'VALIDATION_ERROR',
+        Exception: 'Invalid structure - missing categories array'
+      });
+      throw error;
+    }
+
+    // Ensure all categories have the required structure
+    const validatedCategories: KeywordCategory[] = extractedData.categories
+      .filter((cat: any) => cat && cat.category && Array.isArray(cat.keywords))
+      .map((cat: any) => ({
+        category: String(cat.category),
+        keywords: Array.isArray(cat.keywords) ? cat.keywords.map((k: any) => String(k)) : [],
+      }));
+
+    if (validatedCategories.length === 0) {
+      const error = new Error(`Keywords extraction LLM returned no valid categories: ${JSON.stringify(extractedData)}`);
+      await Logger.logBackendError('ExtractKeywords', error, {
+        TransactionID: transactionId,
+        Endpoint: 'extractKeywordsFromJobDescription',
+        Status: 'VALIDATION_ERROR',
+        Exception: 'No valid categories found'
+      });
+      throw error;
+    }
+
+    await Logger.logInfo('ExtractKeywords', 'Keywords extracted successfully', {
+      TransactionID: transactionId,
+      Endpoint: 'extractKeywordsFromJobDescription',
+      Status: 'SUCCESS',
+      ResponsePayload: { categoriesCount: validatedCategories.length }
     });
 
-    raw = await response.text();
-
-    if (!response.ok) {
-      throw new Error(`Keywords extraction LLM failed with status ${response.status}: ${raw}`);
-    }
-  } catch (err: any) {
-    if (err.message?.includes('503') || err.message?.includes('overload')) {
-      // Retry once for overloaded services
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      try {
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-        });
-        raw = await response.text();
-        if (!response.ok) {
-          throw new Error(`Keywords extraction LLM failed with status ${response.status}: ${raw}`);
-        }
-      } catch (retryErr: any) {
-        throw new Error(`Keywords extraction LLM request failed: ${retryErr.message}`);
-      }
-    } else {
-      throw new Error(`Keywords extraction LLM request failed: ${err.message}`);
-    }
+    return {
+      categories: validatedCategories,
+    };
+  } catch (error) {
+    await Logger.logBackendError('ExtractKeywords', error, {
+      TransactionID: transactionId,
+      Endpoint: 'extractKeywordsFromJobDescription',
+      Status: 'INTERNAL_ERROR'
+    });
+    throw error;
   }
-
-  let json: any;
-  try {
-    json = JSON.parse(raw);
-  } catch (parseErr) {
-    // Try to extract JSON from code blocks or wrapped responses
-    const jsonMatch = raw.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || raw.match(/(\{[\s\S]*\})/);
-    if (jsonMatch) {
-      try {
-        json = JSON.parse(jsonMatch[1]);
-      } catch (e) {
-        throw new Error(`Keywords extraction LLM returned invalid JSON: ${raw.substring(0, 500)}`);
-      }
-    } else {
-      throw new Error(`Keywords extraction LLM returned invalid JSON: ${raw.substring(0, 500)}`);
-    }
-  }
-
-  // Extract text content from provider-specific response structure
-  const textContent = parseLLMResponse(provider, json);
-
-  // Try to parse the text content as JSON
-  let extractedData: ExtractedKeywords;
-  try {
-    extractedData = JSON.parse(textContent);
-  } catch (e) {
-    // Try to extract JSON from code blocks
-    const jsonMatch = textContent.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || textContent.match(/(\{[\s\S]*\})/);
-    if (jsonMatch) {
-      extractedData = JSON.parse(jsonMatch[1]);
-    } else {
-      throw new Error(`Keywords extraction LLM did not return valid JSON structure: ${textContent.substring(0, 500)}`);
-    }
-  }
-
-  // Validate structure
-  if (!extractedData.categories || !Array.isArray(extractedData.categories)) {
-    throw new Error(`Keywords extraction LLM returned invalid structure. Expected categories array: ${JSON.stringify(extractedData)}`);
-  }
-
-  // Ensure all categories have the required structure
-  const validatedCategories: KeywordCategory[] = extractedData.categories
-    .filter((cat: any) => cat && cat.category && Array.isArray(cat.keywords))
-    .map((cat: any) => ({
-      category: String(cat.category),
-      keywords: Array.isArray(cat.keywords) ? cat.keywords.map((k: any) => String(k)) : [],
-    }));
-
-  if (validatedCategories.length === 0) {
-    throw new Error(`Keywords extraction LLM returned no valid categories: ${JSON.stringify(extractedData)}`);
-  }
-
-  return {
-    categories: validatedCategories,
-  };
 }
 

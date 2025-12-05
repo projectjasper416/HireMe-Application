@@ -6,6 +6,8 @@
 
 import type { ResumeRecord } from '../types/resume';
 import type { KeywordCategory, ExtractedKeywords } from './extractKeywords';
+import { Logger } from '../utils/Logger';
+import { v4 as uuid } from 'uuid';
 import {
   extractResumeText,
   extractAllBullets,
@@ -436,49 +438,61 @@ export async function calculateJobSpecificATSScore(
   finalUpdatedBySection?: Record<string, any>,
   baselineScore?: number
 ): Promise<JobSpecificATSScore> {
-  // Extract data
-  const fullText = extractResumeText(resume, finalUpdatedBySection);
-  const bullets = extractAllBullets(resume, finalUpdatedBySection);
+  const transactionId = `calculate-job-specific-score-${uuid()}`;
+  try {
+    
+    // Extract data
+    const fullText = extractResumeText(resume, finalUpdatedBySection);
+    const bullets = extractAllBullets(resume, finalUpdatedBySection);
 
-  // Calculate each breakdown
-  const keywordMatch = calculateKeywordMatch(resume, keywords, finalUpdatedBySection);
-  const contentQuality = calculateContentQuality(resume, fullText, bullets, jobDescription);
-  const experienceRelevance = calculateExperienceRelevance(resume, jobDescription, finalUpdatedBySection);
-  const tailoringEffectiveness = calculateTailoringEffectiveness(baselineScore);
-  const atsOptimization = calculateATSOptimization(resume);
+    // Calculate each breakdown
+    const keywordMatch = calculateKeywordMatch(resume, keywords, finalUpdatedBySection);
+    const contentQuality = calculateContentQuality(resume, fullText, bullets, jobDescription);
+    const experienceRelevance = calculateExperienceRelevance(resume, jobDescription, finalUpdatedBySection);
+    const tailoringEffectiveness = calculateTailoringEffectiveness(baselineScore);
+    const atsOptimization = calculateATSOptimization(resume);
 
-  // Calculate overall score
-  const overallScore = Math.round(
-    keywordMatch.breakdown.score +
-      contentQuality.score +
-      experienceRelevance.score +
-      tailoringEffectiveness.score +
-      atsOptimization.score
-  );
+    // Calculate overall score
+    const overallScore = Math.round(
+      keywordMatch.breakdown.score +
+        contentQuality.score +
+        experienceRelevance.score +
+        tailoringEffectiveness.score +
+        atsOptimization.score
+    );
 
-  const score: JobSpecificATSScore = {
-    overallScore,
-    breakdown: {
-      keywordMatch: keywordMatch.breakdown,
-      contentQuality,
-      experienceRelevance,
-      tailoringEffectiveness,
-      atsOptimization,
-    },
-    suggestions: [],
-    improvementAreas: [],
-    keywordCoverage: keywordMatch.coverage,
-    comparisonScore: baselineScore,
-  };
+    const score: JobSpecificATSScore = {
+      overallScore,
+      breakdown: {
+        keywordMatch: keywordMatch.breakdown,
+        contentQuality,
+        experienceRelevance,
+        tailoringEffectiveness,
+        atsOptimization,
+      },
+      suggestions: [],
+      improvementAreas: [],
+      keywordCoverage: keywordMatch.coverage,
+      comparisonScore: baselineScore,
+    };
 
-  // Update tailoring effectiveness with current score
-  score.breakdown.tailoringEffectiveness = calculateTailoringEffectiveness(baselineScore, overallScore);
+    // Update tailoring effectiveness with current score
+    score.breakdown.tailoringEffectiveness = calculateTailoringEffectiveness(baselineScore, overallScore);
 
-  // Generate suggestions
-  const { suggestions, improvementAreas } = generateSuggestions(score, keywords);
-  score.suggestions = suggestions;
-  score.improvementAreas = improvementAreas;
+    // Generate suggestions
+    const { suggestions, improvementAreas } = generateSuggestions(score, keywords);
+    score.suggestions = suggestions;
+    score.improvementAreas = improvementAreas;
 
-  return score;
+    return score;
+  } catch (error) {
+    await Logger.logBackendError('JobSpecificATSScore', error, {
+      TransactionID: transactionId,
+      Endpoint: 'calculateJobSpecificATSScore',
+      RelatedTo: resume.id,
+      Status: 'INTERNAL_ERROR'
+    });
+    throw error;
+  }
 }
 
