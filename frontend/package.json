@@ -10,15 +10,20 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "dompurify": "^3.1.6",
     "framer-motion": "^11.2.10",
     "lucide-react": "^0.554.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
-    "react-router-dom": "^6.27.0"
+    "react-router-dom": "^6.27.0",
+    "tailwind-merge": "^3.4.0",
+    "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
     "@types/dompurify": "^3.0.5",
+    "@types/node": "^24.10.1",
     "@types/react": "^18.3.26",
     "@types/react-dom": "^18.3.7",
     "@types/uuid": "^10.0.0",

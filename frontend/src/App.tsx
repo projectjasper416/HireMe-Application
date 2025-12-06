@@ -126,7 +126,7 @@ export function App() {
   if (session?.token) {
     return (
       <Router>
-        <div className="min-h-full bg-gradient-to-b from-white to-gray-50">
+        <div className="min-h-full bg-background">
           <div className="mx-auto max-w-6xl px-6 py-10">
             <AppHeader profile={profile} onLogout={handleLogout} />
 
@@ -152,25 +152,25 @@ export function App() {
   }
 
   return (
-    <div className="min-h-full bg-gradient-to-b from-white to-gray-50">
+    <div className="min-h-full bg-background">
       <div className="mx-auto max-w-md px-6 py-16">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-gray-200 bg-white p-8 shadow-sm"
+          className="rounded-lg border border-border bg-card p-8 text-card-foreground shadow-sm"
         >
           <h1 className="mb-2 text-4xl font-bold tracking-tight">Welcome</h1>
-          <p className="mb-6 text-base text-gray-600">Sign in or create your account</p>
+          <p className="mb-6 text-base text-muted-foreground">Sign in or create your account</p>
 
-          <div className="mb-6 flex gap-2 rounded-xl bg-gray-100 p-1">
+          <div className="mb-6 flex gap-2 rounded-lg bg-muted p-1">
             <button
-              className={`flex-1 rounded-lg px-4 py-2 text-sm transition-all ${tab === 'login' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
+              className={`flex-1 rounded-md px-4 py-2 text-sm transition-all ${tab === 'login' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
               onClick={() => setTab('login')}
             >
               Login
             </button>
             <button
-              className={`flex-1 rounded-lg px-4 py-2 text-sm transition-all ${tab === 'signup' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
+              className={`flex-1 rounded-md px-4 py-2 text-sm transition-all ${tab === 'signup' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
               onClick={() => setTab('signup')}
             >
               Sign up
@@ -184,9 +184,9 @@ export function App() {
           )}
 
           <div className="my-6 flex items-center gap-3">
-            <div className="h-px flex-1 bg-gray-200" />
-            <span className="text-sm text-gray-500">or</span>
-            <div className="h-px flex-1 bg-gray-200" />
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-sm text-muted-foreground">or</span>
+            <div className="h-px flex-1 bg-border" />
           </div>
 
           <SocialButtons redirectTo={redirectTo} />
