@@ -5,10 +5,12 @@ import { LoginForm } from './components/LoginForm';
 import { SignupForm } from './components/SignupForm';
 import { SocialButtons } from './components/SocialButtons';
 import { AppHeader } from './components/AppHeader';
+import { ProtectedRoute } from './components/ProtectedRoute';
 import { ResumeWorkspace } from './components/ResumeWorkspace';
 import { AIReviewPage } from './pages/AIReviewPage';
 import { AITailorPage } from './pages/AITailorPage';
 import { JobTrackerPage } from './pages/JobTrackerPage';
+import { AdminDashboardPage } from './pages/AdminDashboardPage';
 import { supabase } from './lib/supabase';
 
 export function App() {
@@ -133,6 +135,14 @@ export function App() {
               <Route path="/ai-review/:resumeId" element={<AIReviewPage apiBaseUrl={apiBaseUrl} token={session.token} />} />
               <Route path="/ai-tailor/:resumeId" element={<AITailorPage apiBaseUrl={apiBaseUrl} token={session.token} />} />
               <Route path="/job-tracker" element={<JobTrackerPage apiBaseUrl={apiBaseUrl} token={session.token} />} />
+              <Route
+                path="/admin"
+                element={
+                  <ProtectedRoute requiredRole="admin" userRole={profile?.role}>
+                    <AdminDashboardPage apiBaseUrl={apiBaseUrl} token={session.token} />
+                  </ProtectedRoute>
+                }
+              />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>
